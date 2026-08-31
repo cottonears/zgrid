@@ -96,8 +96,8 @@ pub fn Indexer2f(
         pub const num_children = base * base;
         pub const num_leaves = nodes_in_level[depth - 1];
         pub const type_label = std.fmt.comptimePrint(
-            "{s} {d} x {d} [{d}]",
-            .{ @tagName(curve), base, effective_depth, depth },
+            "Indexer2f[{d} x ({d} + {d}), {s}]",
+            .{ base, top_levels, regular_levels, @tagName(curve) },
         );
         const lvl_bitshift = math.log2(num_children);
         const axis_bitshift = math.log2(base);
