@@ -5,6 +5,8 @@ const index = @import("index.zig");
 const svg = @import("svg.zig");
 const vol = @import("volume.zig");
 const math = std.math;
+const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const Vec2f = calc.Vec2f;
 const Ball2f = vol.Ball2f;
 const Box2f = vol.Box2f;
@@ -30,7 +32,10 @@ pub fn SquareTree(
         leaf_counts: []DataIndex, // the number of volumes within each leaf node
         bfs_buff_a: []CurveIndex, // Scratch buffer for findOverlapsBfs
         bfs_buff_b: []CurveIndex, // Scratch buffer for findOverlapsBfs
+        self_overlap_data: []OverlapPair,
+        self_overlap_bufs: []data.BoundedList(OverlapPair),
         top_occupied: data.BoundedList(CurveIndex), // indexes of non-empty nodes on level 0
+        max_async_workers: u16,
 
         pub const depth = Indexer.depth;
         pub const nodes_in_level = Indexer.nodes_in_level;
@@ -43,15 +48,21 @@ pub fn SquareTree(
         const CurveIndex = Indexer.CurveIndex;
         const DataIndex = u16; // Used to index volumes within leaf nodes.
         const StartIndex = u32; // Offset into leaf_data/leaf_ids
+        const NodeOccupancy = data.Pair(CurveIndex, usize);
         const Self = @This();
 
         pub fn init(
-            allocator: std.mem.Allocator,
+            allocator: Allocator,
             bound_1: Vec2f, // a corner of the space to be covered
             bound_2: Vec2f, // the opposite corner of the space
-            capacity: u32, // bounds heap-allocated memory
+            capacity: usize, // bounds heap-allocated memory for volumes
+            max_overlaps: usize, // bounds memory allocated for overlap
+            max_async_workers: usize, // 0 will use (max hardware threads - 1)
         ) !Self {
             const indexer = try Indexer.init(bound_1, bound_2);
+            const c = @max(1, (try std.Thread.getCpuCount()) -| 1);
+            const workers = if (max_async_workers > 0) @max(max_async_workers, c) else c;
+
             const leaf_data = try allocator.alloc(Volume, capacity);
             errdefer allocator.free(leaf_data);
             const leaf_ids = try allocator.alloc(ClientId, capacity);
@@ -73,6 +84,16 @@ pub fn SquareTree(
             const bfs_buff_b = try allocator.alloc(CurveIndex, num_leaves);
             errdefer allocator.free(bfs_buff_b);
 
+            const self_overlap_data = try .alloc(OverlapPair, max_overlaps);
+            errdefer allocator.free(self_overlap_data);
+            const self_overlap_bufs = try .alloc(data.BoundedList(), workers);
+            errdefer allocator.free(self_overlap_bufs);
+            for (0..workers) |i| {
+                const start = max_overlaps * i / workers;
+                const end = if (i < workers -| 1) max_overlaps * (i + 1) / workers else self_overlap_data.len;
+                self_overlap_bufs[i] = data.BoundedList(OverlapPair).init(self_overlap_data[start..end]);
+            }
+
             const top_occupied = try allocator.alloc(CurveIndex, nodes_in_level[0]);
             errdefer allocator.free(top_occupied);
 
@@ -83,7 +104,6 @@ pub fn SquareTree(
                 node_bvs[lvl] = try allocator.alloc(Box2f, nodes_in_level[lvl]);
                 levels_allocated += 1;
             }
-
             return Self{
                 .indexer = indexer,
                 .node_bvs = node_bvs,
@@ -96,11 +116,14 @@ pub fn SquareTree(
                 .bfs_buff_a = bfs_buff_a,
                 .bfs_buff_b = bfs_buff_b,
                 .top_occupied = data.BoundedList(CurveIndex).init(top_occupied),
+                .max_async_workers = workers,
             };
         }
 
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+        pub fn deinit(self: *Self, allocator: Allocator) void {
             for (self.node_bvs) |v| allocator.free(v);
+            allocator.free(self.self_overlap_bufs);
+            allocator.free(self.self_overlap_data);
             allocator.free(self.top_occupied.items);
             allocator.free(self.bfs_buff_b);
             allocator.free(self.bfs_buff_a);
@@ -212,28 +235,69 @@ pub fn SquareTree(
 
         /// Finds every pair of stored volumes that overlap each other.
         /// Requires `updateBounds` to have been called since the last `addVolume`.
-        pub fn findSelfOverlaps(self: *const Self, res_buff: []OverlapPair) ![]OverlapPair {
+        pub fn findSelfOverlaps(self: *const Self, io: Io, res_buff: []OverlapPair) ![]OverlapPair {
             if (!self.bounds_valid) return error.BoundsNotUpdated;
-            const top_bvs = self.node_bvs[0];
             const occupied = self.top_occupied.getItems();
-            var res_list = data.BoundedList(OverlapPair).init(res_buff);
-            if (compressed) { // check the nearby level 0 nodes only
-                for (occupied) |a| {
+            if (occupied.len == 0) return self.self_overlap_data[0..0];
+            // want to prioritise work for the level 0 nodes that store many volumes
+            var work_data: [nodes_in_level[0]]NodeOccupancy = undefined;
+            const work = work_data[0..occupied.len];
+            for (work, occupied) |*item, node| {
+                item = .{ .a = node, .b = self.getOccupancyUnderNode(0, node) };
+            }
+            std.sort.pdq(NodeOccupancy, work, {}, NodeOccupancy.greaterThanB);
+            const worker_count = @min(self.max_async_workers, work.len);
+            for (self.self_overlap_bufs[0..worker_count]) |*b| b.clear();
+            var range_iter = try data.AtomicRangeIter.init(0, work.len, 8 * worker_count);
+            if (self.max_async_workers == 1) {
+                try self.findSelfOverlapsWorker(&range_iter, work, &self.self_overlap_bufs[0]);
+            } else {
+                var group: Io.Group = .{};
+                errdefer group.cancel(io);
+                for (0..worker_count) |i| {
+                    const args = .{ self, &range_iter, work, &self.self_overlap_bufs[i] };
+                    group.async(io, self.findSelfOverlapsWorker, args);
+                }
+                try group.await(io);
+            }
+            var result_len: usize = 0;
+            for (self.self_overlap_bufs[0..worker_count]) |*buffer| {
+                // TODO: can we get rid of this machinery in the single-threaded case?
+                // TODO: is it worth parallelising this by doing a counting pass, then copying in several async passes?
+                const items = buffer.getItems();
+                std.mem.copyForwards(
+                    OverlapPair,
+                    res_buff[result_len..][0..items.len],
+                    items,
+                );
+                result_len += items.len;
+            }
+            return self.self_overlap_data[0..result_len];
+        }
+
+        fn findSelfOverlapsWorker(
+            self: *const Self,
+            range_iter: *data.AtomicRangeIter,
+            work: []const NodeOccupancy,
+            res_list: *data.BoundedList(OverlapPair),
+        ) !OverlapPair {
+            const top_bvs = self.node_bvs[0];
+            while (range_iter.next()) |range| {
+                for (work[range.start..range.end]) |node_occ_pair| {
+                    const a = node_occ_pair.a;
                     const bv_a = top_bvs[a];
-                    const neighbourhood: Box2f = .{
+                    var near_buf: [nodes_in_level[0]]CurveIndex = undefined;
+                    const n_box: Box2f = .{
                         .min = bv_a.min - self.max_half_extent,
                         .max = bv_a.max + self.max_half_extent,
                     };
-                    const near = self.indexer.getTopLevelIndexesForBox(self.bfs_buff_a, neighbourhood);
-                    for (near) |b| {
+                    const nodes_to_compare = if (compressed) { // check the nearby level 0 nodes only
+                        self.indexer.getTopLevelIndexesForBox(&near_buf, n_box);
+                    } else { // otherwise check all level 0 nodes
+                        self.top_occupied.getItems();
+                    };
+                    for (nodes_to_compare) |b| {
                         if (b < a) continue; // the pair is visited from the lower node
-                        try self.findSelfOverlapsDtt(0, &res_list, a, bv_a, b, top_bvs[b]);
-                    }
-                }
-            } else { // check the occupied level 0 nodes from each one onwards
-                for (occupied, 0..) |a, i| {
-                    const bv_a = top_bvs[a];
-                    for (occupied[i..]) |b| {
                         try self.findSelfOverlapsDtt(0, &res_list, a, bv_a, b, top_bvs[b]);
                     }
                 }
@@ -288,7 +352,7 @@ pub fn SquareTree(
         /// Accepts a pointer to any tree exposing the same public interface as `SquareTree`.
         pub fn drawTreeSvg(
             self: *const Self,
-            allocator: std.mem.Allocator,
+            allocator: Allocator,
             show_client_ids: bool,
         ) !svg.Canvas {
             const bgs: svg.ShapeStyle = .{

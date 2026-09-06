@@ -1,15 +1,15 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const zgrd = @import("zgrd");
-const calc = zgrd.calc;
-const index = zgrd.index;
-const st = zgrd.square_tree;
-const vol = zgrd.volume;
+const zgrid = @import("zgrid");
+const calc = zgrid.calc;
+const index = zgrid.index;
+const st = zgrid.square_tree;
+const vol = zgrid.volume;
 const ArgsIter = std.process.Args.Iterator;
 const Vec2f = calc.Vec2f;
 const Ball2f = vol.Ball2f;
 const Box2f = vol.Box2f;
-const DataTable = zgrd.data.DataTable;
+const DataTable = zgrid.data.DataTable;
 const Line2f = vol.Line2f;
 const OrientedBox2f = vol.OrientedBox2f;
 const timer = std.Io.Clock.awake;
@@ -17,7 +17,7 @@ const max_capacity = 200_000;
 const min_trials = 10;
 const min_num_vols = 100;
 const usage_msg =
-    \\Usage: zgrd-bench [options]
+    \\Usage: zgrid-bench [options]
     \\  -i: Set an input file (csv) to load test volumes from (see readme for correct format)
     \\  -p: String defining pdf used to generate test volume positions; default "N(5,2.5)"
     \\      Parameters in parentheses for (N)ormal: (mean,std_dev).
@@ -352,7 +352,14 @@ fn benchmarkTree(
     near_search_scale: f32,
 ) !void {
     const extent = 10.0;
-    var tree = try TreeType.init(allocator, .{ 0, 0 }, .{ extent, extent }, max_capacity);
+    var tree = try TreeType.init(
+        allocator,
+        .{ 0, 0 },
+        .{ extent, extent },
+        max_capacity,
+        1024 * max_capacity,
+        0,
+    );
     defer tree.deinit(allocator);
     const headers: [6][]const u8 = .{
         " add  ", " update ", " self-overlap ", " ext-overlap ", " neighbour ", " tick     ",

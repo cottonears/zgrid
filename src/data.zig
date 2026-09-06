@@ -51,6 +51,7 @@ pub fn BoundedList(comptime T: type) type {
     };
 }
 
+/// Stores several columns of same-typed data and provides helpers for computing stats + printing.
 pub fn DataTable(
     comptime T: type,
     comptime num_cols: u8,
@@ -133,6 +134,31 @@ pub fn DataTable(
             }
             try string_list.append(allocator, '\n');
             return string_list.toOwnedSlice(allocator);
+        }
+    };
+}
+
+/// Stores a pair of values and provides helpers for sorting them.
+pub fn Pair(A: type, B: type) type {
+    return struct {
+        a: A,
+        b: B,
+        const Self = @This();
+
+        pub fn greaterThanA(_: void, x: Self, y: Self) bool {
+            return x.a > y.a;
+        }
+
+        pub fn lessThanA(_: void, x: Self, y: Self) bool {
+            return x.a < y.a;
+        }
+
+        pub fn greaterThanB(_: void, x: Self, y: Self) bool {
+            return x.a > y.a;
+        }
+
+        pub fn lessThanB(_: void, x: Self, y: Self) bool {
+            return x.a < y.a;
         }
     };
 }
