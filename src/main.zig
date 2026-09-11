@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const zgrid = @import("zgrid");
 const calc = zgrid.calc;
+const data = zgrid.data;
 const index = zgrid.index;
 const st = zgrid.square_tree;
 const vol = zgrid.volume;
@@ -9,7 +10,6 @@ const ArgsIter = std.process.Args.Iterator;
 const Vec2f = calc.Vec2f;
 const Ball2f = vol.Ball2f;
 const Box2f = vol.Box2f;
-const DataTable = zgrid.data.DataTable;
 const Line2f = vol.Line2f;
 const OrientedBox2f = vol.OrientedBox2f;
 const timer = std.Io.Clock.awake;
@@ -390,7 +390,7 @@ fn benchmarkTree(
         tree.clearStoredVolumes();
         try tree.addVolumes(bodies, entity_indexes);
         try tree.updateBounds();
-        n += (try tree.findSelfOverlaps(overlap_buff)).len;
+        n += (try tree.findSelfOverlaps(io, overlap_buff)).len;
         for (bodies[0..neighbour_count]) |b| {
             const p = b.getCentre();
             n += (try tree.findNearestNeighbours(&nbuf, p, near_search_k, neighbour_range, null)).len;
@@ -443,4 +443,91 @@ fn benchmarkTree(
         "{s}:\nmax leaf {}, overlaps {}, neighbours {}, ext-overlaps {}, size {}B\n{s}\n",
         .{ Indexer.type_label, tree.getMaxLeafOccupancy(), overlaps, neighbours, ext_overlaps, @sizeOf(TreeType), stats_str },
     );
+}
+
+/// Stores several columns of same-typed data and provides helpers for computing stats + printing.
+pub fn DataTable(
+    comptime T: type,
+    comptime num_cols: u8,
+    comptime headers: [num_cols][]const u8,
+    comptime formats: [num_cols][]const u8,
+) type {
+    return struct {
+        column_data: [num_cols]data.BoundedList(T) = undefined,
+        num_rows: usize = 0,
+        const Self = @This();
+
+        pub fn init(allocator: std.mem.Allocator, capacity: usize) !Self {
+            var cols: [num_cols]data.BoundedList(T) = undefined;
+            var cols_created: usize = 0;
+            errdefer for (0..cols_created) |i| allocator.free(cols[i].items);
+            for (0..num_cols) |i| {
+                const col_slice = try allocator.alloc(T, capacity);
+                cols[i] = data.BoundedList(T).init(col_slice);
+                cols_created += 1;
+            }
+            return .{ .column_data = cols };
+        }
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            for (0..num_cols) |i| allocator.free(self.column_data[i].items);
+        }
+
+        pub fn addRow(self: *Self, vals: [num_cols]T) !void {
+            for (0..num_cols) |j| try self.column_data[j].add(vals[j]);
+            self.num_rows += 1;
+        }
+
+        /// Clears columns' contents.
+        pub fn clear(self: *Self) void {
+            for (0..num_cols) |j| self.column_data[j].clear();
+            self.num_rows = 0;
+        }
+
+        /// Sorts column data and gets range + IQR stats for each: { min, q1, q2, q3, max }.
+        /// Doesn't interpolate between indexes: inacurate for a low sample sizes.
+        pub fn computeStats(self: *Self) ?[num_cols][5]T {
+            if (self.column_data[0].index == 0) return null;
+            var col_stats: [num_cols][5]T = undefined;
+            for (0..num_cols) |j| {
+                self.column_data[j].sortAsc();
+                const items = self.column_data[j].getItems();
+                const min = items[0];
+                const q1 = items[1 * items.len / 4];
+                const q2 = items[2 * items.len / 4];
+                const q3 = items[3 * items.len / 4];
+                const max = items[items.len - 1];
+                col_stats[j] = .{ min, q1, q2, q3, max };
+            }
+            return col_stats;
+        }
+
+        /// Builds a multi-line string representing a table's stats.
+        /// Caller owns the returned slice.
+        pub fn getStatsTable(self: *Self, allocator: std.mem.Allocator) ![]u8 {
+            var string_list = try std.ArrayList(u8).initCapacity(allocator, @as(usize, num_cols) * 64);
+            errdefer string_list.deinit(allocator);
+            const col_stats = self.computeStats() orelse return error.NoValues;
+            try string_list.appendSlice(allocator, "|     |");
+            for (0..num_cols) |j| {
+                try string_list.appendSlice(allocator, headers[j]);
+                try string_list.append(allocator, '|');
+            }
+            const row_titles: [5][]const u8 = .{ " min ", " q1  ", " q2  ", " q3  ", " max " };
+            var stat_buff: [32]u8 = undefined;
+            for (0..5) |i| {
+                try string_list.appendSlice(allocator, "\n|");
+                try string_list.appendSlice(allocator, row_titles[i]);
+                try string_list.append(allocator, '|');
+                inline for (0..num_cols) |j| {
+                    const cell_val = col_stats[j][i];
+                    const stat_str = try std.fmt.bufPrint(&stat_buff, formats[j], .{cell_val});
+                    try string_list.appendSlice(allocator, stat_str);
+                    try string_list.append(allocator, '|');
+                }
+            }
+            try string_list.append(allocator, '\n');
+            return string_list.toOwnedSlice(allocator);
+        }
+    };
 }

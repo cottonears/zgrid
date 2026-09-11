@@ -57,10 +57,10 @@ pub fn SquareTree(
             bound_2: Vec2f, // the opposite corner of the space
             capacity: usize, // bounds heap-allocated memory for volumes
             max_overlaps: usize, // bounds memory allocated for overlap
-            max_async_workers: usize, // 0 will use (max hardware threads - 1)
+            max_async_workers: u16, // 0 will use (max hardware threads - 1)
         ) !Self {
             const indexer = try Indexer.init(bound_1, bound_2);
-            const c = @max(1, (try std.Thread.getCpuCount()) -| 1);
+            const c: u16 = @truncate(@max(1, (try std.Thread.getCpuCount()) -| 1));
             const workers = if (max_async_workers > 0) @max(max_async_workers, c) else c;
 
             const leaf_data = try allocator.alloc(Volume, capacity);
@@ -84,9 +84,9 @@ pub fn SquareTree(
             const bfs_buff_b = try allocator.alloc(CurveIndex, num_leaves);
             errdefer allocator.free(bfs_buff_b);
 
-            const self_overlap_data = try .alloc(OverlapPair, max_overlaps);
+            const self_overlap_data = try allocator.alloc(OverlapPair, max_overlaps);
             errdefer allocator.free(self_overlap_data);
-            const self_overlap_bufs = try .alloc(data.BoundedList(), workers);
+            const self_overlap_bufs = try allocator.alloc(data.BoundedList(OverlapPair), workers);
             errdefer allocator.free(self_overlap_bufs);
             for (0..workers) |i| {
                 const start = max_overlaps * i / workers;
@@ -115,6 +115,8 @@ pub fn SquareTree(
                 .staged_ids = staged_ids,
                 .bfs_buff_a = bfs_buff_a,
                 .bfs_buff_b = bfs_buff_b,
+                .self_overlap_bufs = self_overlap_bufs,
+                .self_overlap_data = self_overlap_data,
                 .top_occupied = data.BoundedList(CurveIndex).init(top_occupied),
                 .max_async_workers = workers,
             };
@@ -602,17 +604,17 @@ const test_capacity = 1000;
 test "square tree init + deinit" {
     // check for memory leaks
     const Tree2x8 = SquareTree(index.Indexer2f(2, 1, 7, .Morton), Ball2f, u32);
-    var qt = try Tree2x8.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity);
+    var qt = try Tree2x8.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0, 1);
     defer qt.deinit(test_alloc);
     const Tree4x4 = SquareTree(index.Indexer2f(4, 1, 5, .Zigzag), Ball2f, u32);
-    var ht = try Tree4x4.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity);
+    var ht = try Tree4x4.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0, 1);
     defer ht.deinit(test_alloc);
 }
 
 test "hex tree overlap ball" {
     const IndexerSwizz4x2 = index.Indexer2f(4, 1, 1, .Zigzag);
     const HexTree2 = SquareTree(IndexerSwizz4x2, Ball2f, u32);
-    var tree = try HexTree2.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity);
+    var tree = try HexTree2.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 8, 1);
     defer tree.deinit(test_alloc);
     var balls = [3]Ball2f{
         .{ .centre = .{ 0.2, 0.0 }, .radius = 0.4 },
@@ -644,7 +646,7 @@ test "hex tree overlap ball" {
 test "hex tree overlap box" {
     const Indexer = index.Indexer2f(4, 1, 1, .Zigzag);
     const HexTree2 = SquareTree(Indexer, Box2f, u32);
-    var tree = try HexTree2.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity);
+    var tree = try HexTree2.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 8, 1);
     defer tree.deinit(test_alloc);
     const boxes = [_]Box2f{
         .{ .min = .{ -0.2, -0.4 }, .max = .{ 0.6, 0.4 } },
