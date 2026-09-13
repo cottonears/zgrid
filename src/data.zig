@@ -6,19 +6,25 @@ const std = @import("std");
 pub fn BoundedList(comptime T: type) type {
     return struct {
         index: usize = 0,
-        items: []T = undefined,
+        slice: []T = undefined,
         const Self = @This();
 
         /// Inits an empty list backed by a slice of caller-owned memory.
-        pub fn init(slice: []T) Self {
-            return .{ .items = slice };
+        pub fn init(buf: []T) Self {
+            return .{ .slice = buf };
         }
 
         /// Appends an item; returns BufferCapacityExceeded if at capacity.
         pub fn add(self: *Self, item: T) !void {
-            if (self.index >= self.items.len) return error.BufferCapacityExceeded;
-            self.items[self.index] = item;
+            if (self.index >= self.slice.len) return error.BufferCapacityExceeded;
+            self.slice[self.index] = item;
             self.index += 1;
+        }
+
+        pub fn addRange(self: *Self, items: []T) !void {
+            if (self.index + items.len > self.slice.len) return error.BufferCapacityExceeded;
+            @memcpy(self.slice[self.index..][0..items.len], items[0..]);
+            self.index += items.len;
         }
 
         /// Empties the list without releasing its backing memory.
@@ -28,15 +34,16 @@ pub fn BoundedList(comptime T: type) type {
 
         /// Gets a slice containing the current items.
         pub fn getItems(self: *const Self) []T {
-            return self.items[0..self.index];
+            return self.slice[0..self.index];
         }
 
+        // TODO: remove the below and add to data-table
         pub fn sortAsc(self: *Self) void {
-            std.sort.pdq(T, self.items[0..self.index], {}, asc);
+            std.sort.pdq(T, self.slice[0..self.index], {}, asc);
         }
 
         pub fn sortDesc(self: *Self) void {
-            std.sort.pdq(T, self.items[0..self.index], {}, desc);
+            std.sort.pdq(T, self.slice[0..self.index], {}, desc);
         }
 
         fn asc(_: void, a: T, b: T) bool {
@@ -44,31 +51,6 @@ pub fn BoundedList(comptime T: type) type {
         }
         fn desc(_: void, a: T, b: T) bool {
             return a > b;
-        }
-    };
-}
-
-/// Stores a pair of values and provides helpers for sorting them.
-pub fn Pair(A: type, B: type) type {
-    return struct {
-        a: A,
-        b: B,
-        const Self = @This();
-
-        pub fn greaterThanA(_: void, x: Self, y: Self) bool {
-            return x.a > y.a;
-        }
-
-        pub fn lessThanA(_: void, x: Self, y: Self) bool {
-            return x.a < y.a;
-        }
-
-        pub fn greaterThanB(_: void, x: Self, y: Self) bool {
-            return x.a > y.a;
-        }
-
-        pub fn lessThanB(_: void, x: Self, y: Self) bool {
-            return x.a < y.a;
         }
     };
 }

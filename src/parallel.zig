@@ -1,12 +1,10 @@
 const std = @import("std");
+const data = @import("data.zig");
 const AtomicUsize = std.atomic.Value(usize);
-const Thread = std.Thread;
-const cache_line = std.atomic.cache_line;
-
 pub const Range = struct { start: usize, end: usize };
 
 /// Defined in a separate struct and cache-aligned to prevent false sharing.
-const AtomicCounter = struct {
+pub const AtomicCounter = struct {
     value: AtomicUsize align(std.atomic.cache_line) = AtomicUsize.init(0),
 };
 
@@ -20,13 +18,12 @@ pub const AtomicRangeIter = struct {
     const Self = @This();
 
     /// Creates a range iterator that subdivides the range from [start, end).
-    pub fn init(start: usize, end: usize, num_partitions: usize) !Self {
-        if (start > end) return error.InvalidIndexes;
-        if (num_partitions < 1) return error.InvalidNumberPartitions;
+    pub fn init(start: usize, end: usize, num_partitions: usize) Self {
+        std.debug.assert(start <= end);
         if (start == end) {
             return .{ .num_ranges = 1, .quotient = 0, .remainder = 0, .start = start };
         } else {
-            const n = @min(num_partitions, end - start);
+            const n = @max(1, @min(num_partitions, end - start));
             const total_len = end - start;
             return .{
                 .num_ranges = n,
@@ -49,10 +46,36 @@ pub const AtomicRangeIter = struct {
     }
 };
 
-// TODO: use the range iter for both input + output, make some structs to help with this
-// For a lot of jobs there will be a coalesce stage that must be done on one thread
-// Think of strategies for doing this in parallel.
-// E.g., have input + output queues (inputs blocks can be stack allocated, output written by a single worker)
+// TODO: implement the below to handle the below functions + use it
+/// Wraps a bound list + counter to support thread-safe writing to a shared buffer.
+// pub fn SharedList(comptime T: type) type
+
+/// Claims room in an output buffer by incrementing the atomic counter, writes results, then empties the list
+pub fn copyToSharedBuffer(
+    comptime T: type,
+    res_list: *data.BoundedList(T),
+    out_counter: *AtomicCounter,
+    output: []T,
+) void {
+    const items = res_list.getItems();
+    if (items.len == 0) return;
+    const start = out_counter.value.fetchAdd(items.len, .monotonic);
+    // TODO: struct version should write up until the end of the buffer (friendlier for callers who may want to partially recover).
+    if (start + items.len <= output.len) @memcpy(output[start..][0..items.len], items);
+    res_list.clear();
+}
+
+// TODO: struct version should provider friendlier version of the below, allowing all written results to be recovered
+/// Gets the output slice, or an error if buffer capacity was exceeded
+pub fn getOutputSlice(
+    comptime T: type,
+    out_counter: *const AtomicCounter,
+    output: []T,
+) ![]T {
+    const len = out_counter.value.load(.monotonic);
+    if (len > output.len) return error.BufferCapacityExceeded;
+    return output[0..len];
+}
 
 const testing = std.testing;
 
@@ -67,7 +90,7 @@ test "test range iterator" {
         const start = random.uintAtMost(usize, start_max);
         const end = start + random.uintAtMost(usize, len_max);
         var len_covered: usize = 0;
-        var range_iter = try AtomicRangeIter.init(start, end, desired_parts);
+        var range_iter = AtomicRangeIter.init(start, end, desired_parts);
         while (range_iter.next()) |p| {
             try testing.expect(p.start >= start);
             try testing.expect(p.end <= end);
@@ -75,19 +98,4 @@ test "test range iterator" {
         }
         try testing.expectEqual(len_covered, end - start);
     }
-}
-
-test "check atomic iter layout" {
-    std.debug.print("cache line = {} B\n", .{std.atomic.cache_line});
-    inline for ([_]type{ AtomicUsize, AtomicCounter, AtomicRangeIter }) |A| {
-        std.debug.print(
-            "{s}: align / size = {} / {} B\n",
-            .{ @typeName(A), @alignOf(A), @sizeOf(A) },
-        );
-    }
-    std.debug.print("offset r           = {}\n", .{@offsetOf(AtomicRangeIter, "r")});
-    std.debug.print("offset num_ranges  = {}\n", .{@offsetOf(AtomicRangeIter, "num_ranges")});
-    std.debug.print("offset quotient    = {}\n", .{@offsetOf(AtomicRangeIter, "quotient")});
-    std.debug.print("offset remainder   = {}\n", .{@offsetOf(AtomicRangeIter, "remainder")});
-    std.debug.print("offset start       = {}\n", .{@offsetOf(AtomicRangeIter, "start")});
 }

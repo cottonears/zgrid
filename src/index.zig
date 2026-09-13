@@ -195,18 +195,32 @@ pub fn Indexer2f(
         }
 
         /// Gets the indexes of top-level cells that lie within the box b.
-        pub fn getTopLevelIndexesForBox(self: *const Self, buff: []CurveIndex, b: Box2f) []CurveIndex {
+        pub fn getTopLevelIndexesForBox(
+            self: *const Self,
+            res_list: *data.BoundedList(CurveIndex),
+            b: Box2f,
+            start_leaf: CurveIndex,
+        ) !void {
             const lo = self.getTopLevelCoordsForPoint(b.min);
             const hi = self.getTopLevelCoordsForPoint(b.max);
-            var len: usize = 0;
-            for (lo.row..hi.row + 1) |row| {
-                for (lo.col..hi.col + 1) |col| {
-                    const coords: GridCoords = .{ .row = @intCast(row), .col = @intCast(col) };
-                    buff[len] = getIndexForGridCoords(top_levels, coords);
-                    len += 1;
+            if (start_leaf > 0) { // TODO: check if putting the branch here actually helps performance
+                const start_0 = getLeafPredecessor(start_leaf, 0);
+                for (lo.row..hi.row + 1) |row| {
+                    for (lo.col..hi.col + 1) |col| {
+                        const coords: GridCoords = .{ .row = @intCast(row), .col = @intCast(col) };
+                        const index = getIndexForGridCoords(top_levels, coords);
+                        if (index >= start_0) try res_list.add(index);
+                    }
+                }
+            } else {
+                for (lo.row..hi.row + 1) |row| {
+                    for (lo.col..hi.col + 1) |col| {
+                        const coords: GridCoords = .{ .row = @intCast(row), .col = @intCast(col) };
+                        const index = getIndexForGridCoords(top_levels, coords);
+                        try res_list.add(index);
+                    }
                 }
             }
-            return buff[0..len];
         }
 
         /// Gets a box covering the region of space for the indexed leaf node.

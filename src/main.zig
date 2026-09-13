@@ -320,6 +320,8 @@ fn benchmarkSquareTrees(allocator: std.mem.Allocator, io: std.Io) !void {
             index.Indexer2f(2, 5, 1, .Morton),
             index.Indexer2f(2, 6, 0, .Morton),
             index.Indexer2f(4, 2, 1, .Morton),
+            index.Indexer2f(4, 2, 2, .Morton),
+            index.Indexer2f(4, 3, 1, .Morton),
             index.Indexer2f(4, 3, 0, .Morton),
             index.Indexer2f(4, 2, 1, .Zigzag),
             index.Indexer2f(4, 3, 0, .Zigzag),
@@ -352,14 +354,7 @@ fn benchmarkTree(
     near_search_scale: f32,
 ) !void {
     const extent = 10.0;
-    var tree = try TreeType.init(
-        allocator,
-        .{ 0, 0 },
-        .{ extent, extent },
-        max_capacity,
-        1024 * max_capacity,
-        0,
-    );
+    var tree = try TreeType.init(allocator, .{ 0, 0 }, .{ extent, extent }, max_capacity, 0);
     defer tree.deinit(allocator);
     const headers: [6][]const u8 = .{
         " add  ", " update ", " self-overlap ", " ext-overlap ", " neighbour ", " tick     ",
@@ -370,35 +365,53 @@ fn benchmarkTree(
     var table = try DataTable(f64, 6, headers, formats).init(allocator, num_trials);
     defer table.deinit(allocator);
     const bodies = random_vols.getRandomBodies(TreeType.VolumeType);
-    const overlap_buff = try allocator.alloc(TreeType.OverlapPair, 1024 * bodies.len);
-    defer allocator.free(overlap_buff);
-    const id_buff = try allocator.alloc(TreeType.ClientIdType, bodies.len);
-    defer allocator.free(id_buff);
+    const pair_buf = try allocator.alloc(TreeType.OverlapPair, 1024 * bodies.len);
+    defer allocator.free(pair_buf);
     var entity_indexes = try allocator.alloc(TreeType.ClientIdType, bodies.len);
     defer allocator.free(entity_indexes);
     for (0..entity_indexes.len) |i| entity_indexes[i] = @intCast(i);
     const ext_overlap_count = @max(1, @as(usize, @trunc(calc.asf32(bodies.len) * ext_overlap_amount)));
-    var ext_overlap_query_vol = random_vols.balls.items[0];
-    ext_overlap_query_vol.radius = extent * ext_overlap_scale;
+    const ext_query_ids = entity_indexes[0..ext_overlap_count];
+    const ext_query_vols = try allocator.alloc(Ball2f, ext_overlap_count);
+    defer allocator.free(ext_query_vols);
+    var query_template = random_vols.balls.items[0];
+    query_template.radius = extent * ext_overlap_scale;
+    for (bodies[0..ext_overlap_count], ext_query_vols) |body, *query| {
+        query.* = query_template;
+        query.centre = body.getCentre();
+    }
     const neighbour_count = @max(1, @as(usize, @trunc(calc.asf32(bodies.len) * near_search_amount)));
     const neighbour_range = extent * near_search_scale;
-    var nbuf: [256]TreeType.Neighbour = undefined;
+    const neighbour_k: usize = near_search_k;
+    const neighbour_buf = try allocator.alloc(TreeType.Neighbour, neighbour_count * neighbour_k);
+    defer allocator.free(neighbour_buf);
+    const nbufs = try allocator.alloc([]TreeType.Neighbour, neighbour_count);
+    defer allocator.free(nbufs);
+    const neighbour_points = try allocator.alloc(Vec2f, neighbour_count);
+    defer allocator.free(neighbour_points);
+    const neighbour_excl_ids = try allocator.alloc(?TreeType.ClientIdType, neighbour_count);
+    defer allocator.free(neighbour_excl_ids);
+    for (bodies[0..neighbour_count], neighbour_points) |body, *point| point.* = body.getCentre();
+    @memset(neighbour_excl_ids, null);
 
     // untimed warmup trials
     var n: usize = 0;
     for (0..untimed_trials) |_| {
         tree.clearStoredVolumes();
         try tree.addVolumes(bodies, entity_indexes);
-        try tree.updateBounds();
-        n += (try tree.findSelfOverlaps(io, overlap_buff)).len;
-        for (bodies[0..neighbour_count]) |b| {
-            const p = b.getCentre();
-            n += (try tree.findNearestNeighbours(&nbuf, p, near_search_k, neighbour_range, null)).len;
-        }
-        for (bodies[0..ext_overlap_count]) |b| {
-            ext_overlap_query_vol.centre = b.getCentre();
-            n += (try tree.findOverlaps(id_buff, ext_overlap_query_vol)).len;
-        }
+        try tree.updateBoundsParallel(io);
+        n += (try tree.findSelfOverlapsParallel(io, pair_buf)).len;
+        for (nbufs, 0..) |*buf, i| buf.* = neighbour_buf[i * neighbour_k ..][0..neighbour_k];
+        const neighbour_results = try tree.findNeighboursParallel(
+            io,
+            nbufs,
+            neighbour_points,
+            neighbour_excl_ids,
+            near_search_k,
+            neighbour_range,
+        );
+        for (neighbour_results) |result| n += result.len;
+        n += (try tree.findExtOverlapsParallel(io, pair_buf, ext_query_ids, ext_query_vols)).len;
     }
 
     // timed trials
@@ -410,21 +423,23 @@ fn benchmarkTree(
         tree.clearStoredVolumes();
         try tree.addVolumes(bodies, entity_indexes);
         const t_1 = timer.now(io);
-        try tree.updateBounds();
+        try tree.updateBoundsParallel(io);
         const t_2 = timer.now(io);
-        overlaps = (try tree.findSelfOverlaps(overlap_buff)).len;
+        overlaps = (try tree.findSelfOverlapsParallel(io, pair_buf)).len;
         const t_3 = timer.now(io);
         neighbours = 0;
-        for (bodies[0..neighbour_count]) |b| {
-            const p = b.getCentre();
-            neighbours += (try tree.findNearestNeighbours(&nbuf, p, near_search_k, neighbour_range, null)).len;
-        }
+        for (nbufs, 0..) |*buf, i| buf.* = neighbour_buf[i * neighbour_k ..][0..neighbour_k];
+        const neighbour_results = try tree.findNeighboursParallel(
+            io,
+            nbufs,
+            neighbour_points,
+            neighbour_excl_ids,
+            near_search_k,
+            neighbour_range,
+        );
+        for (neighbour_results) |result| neighbours += result.len;
         const t_4 = timer.now(io);
-        ext_overlaps = 0;
-        for (bodies[0..ext_overlap_count]) |b| {
-            ext_overlap_query_vol.centre = b.getCentre();
-            ext_overlaps += (try tree.findOverlaps(id_buff, ext_overlap_query_vol)).len;
-        }
+        ext_overlaps = (try tree.findExtOverlapsParallel(io, pair_buf, ext_query_ids, ext_query_vols)).len;
         const t_5 = timer.now(io);
         const total_ns = elapsedNs(t_0, t_5);
         try table.addRow(.{
@@ -460,7 +475,7 @@ pub fn DataTable(
         pub fn init(allocator: std.mem.Allocator, capacity: usize) !Self {
             var cols: [num_cols]data.BoundedList(T) = undefined;
             var cols_created: usize = 0;
-            errdefer for (0..cols_created) |i| allocator.free(cols[i].items);
+            errdefer for (0..cols_created) |i| allocator.free(cols[i].slice);
             for (0..num_cols) |i| {
                 const col_slice = try allocator.alloc(T, capacity);
                 cols[i] = data.BoundedList(T).init(col_slice);
@@ -470,7 +485,7 @@ pub fn DataTable(
         }
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            for (0..num_cols) |i| allocator.free(self.column_data[i].items);
+            for (0..num_cols) |i| allocator.free(self.column_data[i].slice);
         }
 
         pub fn addRow(self: *Self, vals: [num_cols]T) !void {

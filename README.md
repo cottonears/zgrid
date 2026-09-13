@@ -116,9 +116,12 @@ Neighbouring leaves' volumes are also frequently adjacent in memory, though it's
 - [X] Improve benchmarking reports + tooling (repeatable before/after comparisons, less run-to-run noise).
 - [X] Finish `findNearestNeighbours` (expanding-ring search + bounded best-K tracking), add a brute-force-agreement test,  research BIGMIN/LITMAX curve-range decomposition as a possible performance improvement;
 - [X] Add `getLeafOccupancyUnderNode` + an indexer helper (e.g. `getLeafSuccessorRange`) to help with workload partitioning.
-- [ ] Implement a multi-threaded `findSelfOverlaps` (partition `top_occupied` across threads by occupancy, not raw node count; no locks).
-- [ ] Finish the placeholder sections of this README (Volumes, SquareTree, Indexing, "Sizing your square tree").
+- [X] Implement a multi-threaded `findSelfOverlaps` (partition `top_occupied` across threads by occupancy, not raw node count; no locks).
+- [ ] Implement helper for determining suitable number workers + parts for parallel methods.
+- [ ] Implement parallel CSR sort within updateBounds
+- [ ] Improve indexing performance with bit-manipulating functions
 - [ ] Implement `getExpandedVolume(V, vol, velocity, time_step)` (makes conservative BVs for moving bodies); required to prevent tunnelling.
+- [ ] Finish the placeholder sections of this README (Volumes, SquareTree, Indexing, "Sizing your square tree").
 - [ ] Set up CI (`zig build test` on push).
 
 ## Roadmap

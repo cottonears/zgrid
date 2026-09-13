@@ -15,7 +15,7 @@ pub const empty_box = Box2f{
     .max = @splat(-math.floatMax(f32)),
 };
 
-/// A circular region in 2D Euclidean space.
+/// A circular region in the 2D plane.
 pub const Ball2f = struct {
     centre: Vec2f,
     radius: f32,
@@ -48,7 +48,7 @@ pub const Ball2f = struct {
     }
 };
 
-/// An axis-aligned rectangular region in 2D Euclidean space.
+/// An axis-aligned rectangular region in the 2D plane.
 pub const Box2f = struct {
     min: Vec2f,
     max: Vec2f,
