@@ -1,6 +1,5 @@
 const std = @import("std");
 const calc = @import("calc.zig");
-const data = @import("data.zig");
 const index = @import("index.zig");
 const para = @import("parallel.zig");
 const svg = @import("svg.zig");
@@ -331,7 +330,7 @@ pub fn SquareTree(
             query_vols: anytype,
         ) void {
             var pair_buf: [worker_buf_pair_len]OverlapPair = undefined;
-            var res_list = data.BoundedList(OverlapPair).init(&pair_buf);
+            var res_list = std.ArrayList(OverlapPair).initBuffer(&pair_buf);
             while (range_iter.next()) |range| {
                 for (query_ids[range.start..range.end], query_vols[range.start..range.end]) |id, v| {
                     self.findOverlapsBfs(&res_list, scratch_a, scratch_b, id, v, 0, 0) catch
@@ -404,7 +403,7 @@ pub fn SquareTree(
             output: []OverlapPair,
         ) void {
             var pair_buf: [worker_buf_pair_len]OverlapPair = undefined;
-            var res_list = data.BoundedList(OverlapPair).init(&pair_buf);
+            var res_list = std.ArrayList(OverlapPair).initBuffer(&pair_buf);
             while (range_iter.next()) |range| {
                 if (range.start >= range.end) continue;
                 var leaf_cursor = self.flatIndexToLeafIndex(range.start);
@@ -689,7 +688,7 @@ pub fn SquareTree(
         /// Performs a BFS for stored volumes that overlap with the provided query volume.
         fn findOverlapsBfs(
             self: *const Self,
-            res_list: *data.BoundedList(OverlapPair),
+            res_list: *std.ArrayList(OverlapPair),
             slice_a: []CurveIndex,
             slice_b: []CurveIndex,
             query_id: ClientId,
@@ -699,7 +698,7 @@ pub fn SquareTree(
         ) !void {
             // search through higher-level nodes first
             const query_aabb: Box2f = query_vol.getBoundingBox();
-            var search_list = data.BoundedList(CurveIndex).init(slice_a);
+            var search_list = std.ArrayList(CurveIndex).initBuffer(slice_a);
             if (compressed) { // check the neighbouring level 0 nodes only
                 const n_box: Box2f = .{
                     .min = query_aabb.min - self.max_half_extent,
@@ -708,27 +707,27 @@ pub fn SquareTree(
                 try self.indexer.getTopLevelIndexesForBox(&search_list, n_box, start_leaf);
             } else { // check all level 0 nodes
                 const pred_0 = Indexer.getLeafPredecessor(start_leaf, 0);
-                for (pred_0..nodes_in_level[0]) |k| try search_list.add(@intCast(k));
+                for (pred_0..nodes_in_level[0]) |k| try search_list.appendBounded(@intCast(k));
             }
-            var next_list = data.BoundedList(CurveIndex).init(slice_b);
+            var next_list = std.ArrayList(CurveIndex).initBuffer(slice_b);
             for (0..depth - 1) |lvl| {
                 const pred_next: usize = Indexer.getLeafPredecessor(start_leaf, @truncate(lvl + 1));
-                for (search_list.getItems()) |i| {
+                for (search_list.items) |i| {
                     const node_vol = self.node_bvs[lvl][i];
                     if (!vol.checkVolumesOverlap(query_aabb, node_vol)) continue;
                     const first_child: usize = Indexer.getFirstChild(i);
                     const start = @max(pred_next, first_child);
                     const end = first_child + Indexer.num_children;
-                    for (start..end) |k| try next_list.add(@intCast(k));
+                    for (start..end) |k| try next_list.appendBounded(@intCast(k));
                 }
                 // Swap the buffers
                 const tmp = search_list;
                 search_list = next_list;
                 next_list = tmp;
-                next_list.clear();
+                next_list.clearRetainingCapacity();
             }
             // check the surviving leaf nodes for overlaps
-            for (search_list.getItems()) |i| {
+            for (search_list.items) |i| {
                 const leaf_vol = self.node_bvs[depth - 1][i];
                 if (!vol.checkVolumesOverlap(query_aabb, leaf_vol)) continue;
                 const items = self.getLeafVolumes(i);
@@ -736,7 +735,7 @@ pub fn SquareTree(
                 const start = if (i == start_leaf) start_vol_index else 0;
                 for (items[start..], ids[start..]) |stored_vol, id| {
                     if (!vol.checkVolumesOverlap(query_vol, stored_vol)) continue;
-                    try res_list.add(.{ query_id, id });
+                    try res_list.appendBounded(.{ query_id, id });
                 }
             }
         }

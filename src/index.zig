@@ -1,6 +1,5 @@
 const std = @import("std");
 const calc = @import("calc.zig");
-const data = @import("data.zig");
 const vol = @import("volume.zig");
 const math = std.math;
 const Vec2f = calc.Vec2f;
@@ -197,7 +196,7 @@ pub fn Indexer2f(
         /// Gets the indexes of top-level cells that lie within the box b.
         pub fn getTopLevelIndexesForBox(
             self: *const Self,
-            res_list: *data.BoundedList(CurveIndex),
+            res_list: *std.ArrayList(CurveIndex),
             b: Box2f,
             start_leaf: CurveIndex,
         ) !void {
@@ -209,7 +208,7 @@ pub fn Indexer2f(
                     for (lo.col..hi.col + 1) |col| {
                         const coords: GridCoords = .{ .row = @intCast(row), .col = @intCast(col) };
                         const index = getIndexForGridCoords(top_levels, coords);
-                        if (index >= start_0) try res_list.add(index);
+                        if (index >= start_0) try res_list.appendBounded(index);
                     }
                 }
             } else {
@@ -217,7 +216,7 @@ pub fn Indexer2f(
                     for (lo.col..hi.col + 1) |col| {
                         const coords: GridCoords = .{ .row = @intCast(row), .col = @intCast(col) };
                         const index = getIndexForGridCoords(top_levels, coords);
-                        try res_list.add(index);
+                        try res_list.appendBounded(index);
                     }
                 }
             }

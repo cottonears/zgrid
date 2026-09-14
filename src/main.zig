@@ -2,7 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const zgrid = @import("zgrid");
 const calc = zgrid.calc;
-const data = zgrid.data;
 const index = zgrid.index;
 const st = zgrid.square_tree;
 const vol = zgrid.volume;
@@ -468,45 +467,45 @@ pub fn DataTable(
     comptime formats: [num_cols][]const u8,
 ) type {
     return struct {
-        column_data: [num_cols]data.BoundedList(T) = undefined,
+        column_data: [num_cols]std.ArrayList(T) = undefined,
         num_rows: usize = 0,
         const Self = @This();
 
         pub fn init(allocator: std.mem.Allocator, capacity: usize) !Self {
-            var cols: [num_cols]data.BoundedList(T) = undefined;
+            var cols: [num_cols]std.ArrayList(T) = undefined;
             var cols_created: usize = 0;
-            errdefer for (0..cols_created) |i| allocator.free(cols[i].slice);
+            errdefer for (0..cols_created) |i| cols[i].deinit(allocator);
             for (0..num_cols) |i| {
-                const col_slice = try allocator.alloc(T, capacity);
-                cols[i] = data.BoundedList(T).init(col_slice);
+                cols[i] = try std.ArrayList(T).initCapacity(allocator, capacity);
                 cols_created += 1;
             }
             return .{ .column_data = cols };
         }
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            for (0..num_cols) |i| allocator.free(self.column_data[i].slice);
+            for (0..num_cols) |i| self.column_data[i].deinit(allocator);
         }
 
+        /// Appends a row; returns OutOfMemory if a column is at capacity.
         pub fn addRow(self: *Self, vals: [num_cols]T) !void {
-            for (0..num_cols) |j| try self.column_data[j].add(vals[j]);
+            for (0..num_cols) |j| try self.column_data[j].appendBounded(vals[j]);
             self.num_rows += 1;
         }
 
-        /// Clears columns' contents.
+        /// Clears columns' contents without releasing their backing memory.
         pub fn clear(self: *Self) void {
-            for (0..num_cols) |j| self.column_data[j].clear();
+            for (0..num_cols) |j| self.column_data[j].clearRetainingCapacity();
             self.num_rows = 0;
         }
 
         /// Sorts column data and gets range + IQR stats for each: { min, q1, q2, q3, max }.
         /// Doesn't interpolate between indexes: inacurate for a low sample sizes.
         pub fn computeStats(self: *Self) ?[num_cols][5]T {
-            if (self.column_data[0].index == 0) return null;
+            if (self.column_data[0].items.len == 0) return null;
             var col_stats: [num_cols][5]T = undefined;
             for (0..num_cols) |j| {
-                self.column_data[j].sortAsc();
-                const items = self.column_data[j].getItems();
+                const items = self.column_data[j].items;
+                std.sort.pdq(T, items, {}, std.sort.asc(T));
                 const min = items[0];
                 const q1 = items[1 * items.len / 4];
                 const q2 = items[2 * items.len / 4];
