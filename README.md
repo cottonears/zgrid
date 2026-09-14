@@ -117,7 +117,8 @@ Neighbouring leaves' volumes are also frequently adjacent in memory, though it's
 - [X] Finish `findNearestNeighbours` (expanding-ring search + bounded best-K tracking), add a brute-force-agreement test,  research BIGMIN/LITMAX curve-range decomposition as a possible performance improvement;
 - [X] Add `getLeafOccupancyUnderNode` + an indexer helper (e.g. `getLeafSuccessorRange`) to help with workload partitioning.
 - [X] Implement a multi-threaded `findSelfOverlaps` (partition `top_occupied` across threads by occupancy, not raw node count; no locks).
-- [ ] Implement helper for determining suitable number workers + parts for parallel methods.
+- [X] Implement helper for determining suitable number workers + parts for parallel methods.
+- [ ] Add findExtOverlapsSingle
 - [ ] Implement parallel CSR sort within updateBounds
 - [ ] Improve indexing performance with bit-manipulating functions
 - [ ] Implement `getExpandedVolume(V, vol, velocity, time_step)` (makes conservative BVs for moving bodies); required to prevent tunnelling.
