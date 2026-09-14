@@ -46,11 +46,10 @@ pub const AtomicRangeIter = struct {
     }
 };
 
-// Wraps a caller-supplied buffer + atomic counter to support lightweight thread-safe writing.
+/// Wraps a caller-supplied buffer + atomic counter to support lightweight thread-safe writing.
 pub fn SharedBuffer(comptime T: type) type {
     return struct {
         counter: AtomicCounter = .{}, // this can be incremented past items.len (overflow case)
-        index: usize = 0, // indexes items (does not increment past length)
         items: []T,
         const Self = @This();
 
@@ -60,36 +59,33 @@ pub fn SharedBuffer(comptime T: type) type {
         }
 
         /// Copies items from the provided slice to this buffer's storage: thread-safe.
-        /// No items will be copied once buffer capacity is exceeded.
-        pub fn appendSlice(self: *Self, slice: []T) void {
+        pub fn appendSlice(self: *Self, slice: []const T) void {
             if (slice.len == 0) return;
             const start = self.counter.value.fetchAdd(slice.len, .monotonic);
-            // TODO: check the below carefully
             const end = @min(self.items.len, start + slice.len);
-            if (start < end) {
-                @memcpy(self.items[start..end], slice[0..(end - start)]);
-                self.index += end - start;
-            }
+            if (start < end) @memcpy(self.items[start..end], slice[0..(end - start)]);
         }
 
         /// Empties the list without releasing its backing memory.
+        /// Not thread-safe: only call after all writers have finished.
         pub fn clear(self: *Self) void {
-            self.counter.value = AtomicUsize.init(0); // correct?
-            self.index = 0;
+            self.counter.value.store(0, .monotonic);
         }
 
-        /// Gets a slice containing the all stored items.
+        /// Gets a slice containing all the stored items.
         /// Returns an error if the buffer's capacity was exceeded.
+        /// Call after writers have finished their work.
         pub fn getItems(self: *const Self) ![]T {
             const len = self.counter.value.load(.monotonic);
-            if (len > self.index) return error.SharedBufferCapacityExceeded;
-            return self.getItemsNoError();
+            if (len > self.items.len) return error.SharedBufferCapacityExceeded;
+            return self.items[0..len];
         }
 
         /// Gets a slice containing the current items; never returns an error.
         /// Will exclude any items that couldn't be stored after the buffer reached capacity.
         pub fn getItemsNoError(self: *const Self) []T {
-            return self.items[0..self.index];
+            const len = self.counter.value.load(.monotonic);
+            return self.items[0..@min(len, self.items.len)];
         }
     };
 }
@@ -150,7 +146,6 @@ test "test write to shared buffer" {
         pub fn doWork(iter: *AtomicRangeIter, data: []usize, out: *SharedBuffer(usize)) void {
             var scratch_buf: [SCRATCH_LEN]usize = undefined;
             var scratch_list = std.ArrayList(usize).initBuffer(&scratch_buf);
-            std.debug.print("scratch_list.capacity ={}\n", .{scratch_list.capacity});
             while (iter.next()) |r| {
                 for (r.start..r.end) |i| {
                     const result = data[i] * data[i];
@@ -158,13 +153,13 @@ test "test write to shared buffer" {
                     if (scratch_list.items.len == scratch_list.capacity) {
                         out.appendSlice(scratch_list.items);
                         scratch_list.clearRetainingCapacity();
-                        std.debug.print("scratch_list cleared\n", .{});
                     }
                     scratch_list.appendBounded(result) catch |e| {
-                        std.debug.print("error in doWork: {}\n", .{e});
+                        std.debug.print("unexpected error in doWork: {}\n", .{e});
                     };
                 }
             }
+            out.appendSlice(scratch_list.items); // flush results
         }
     };
 
@@ -177,7 +172,8 @@ test "test write to shared buffer" {
     errdefer group.cancel(testing.io);
     const num_workers = 4;
     // NOTE: work split into 8 partitions (of length 128) shared among 4 workers with scratch_len = 64
-    // This forces workers to clear their stack buffers twice per allocated partition
+    // This forces workers to clear their stack buffers twice per allocated partition.
+    // The output buffer is also undersized, so we expect an error when retrieving results later.
     for (0..num_workers) |_| {
         group.async(testing.io, Work.doWork, .{ &range_iter, &in_buf, &shared_buf });
     }
@@ -185,8 +181,8 @@ test "test write to shared buffer" {
     try testing.expectError(error.SharedBufferCapacityExceeded, shared_buf.getItems());
     const out_slice = shared_buf.getItemsNoError();
     try testing.expectEqual(out_buf.len, out_slice.len);
-    for (out_slice, 0..) |v, i| {
-        const sqrt_v = std.math.sqrt(v);
-        std.debug.print("{d}. {d} -> {d}\n", .{ i, sqrt_v, v });
-    }
+    // for (out_slice, 0..) |v, i| {
+    //     const sqrt_v = std.math.sqrt(v);
+    //     std.debug.print("{d}. {d} -> {d}\n", .{ i, sqrt_v, v });
+    // }
 }
