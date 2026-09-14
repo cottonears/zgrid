@@ -54,10 +54,16 @@ pub fn SquareTree(
         const DataIndex = u16; // Used to index volumes within leaf nodes.
         const StartIndex = u32; // Offset into leaf_data/leaf_ids
         const VolIndex = struct { leaf: CurveIndex, offset: DataIndex }; // locates a stored volume
-        const max_parts_per_worker = 32;
         const max_ring_size: usize = 4 * math.sqrt(num_leaves);
-        const worker_buf_bytes = 128 * 1024; // stack-allocated bytes for each worker
+        const worker_buf_bytes = 8 * 1024; // stack-allocated staging bytes for each worker
         const worker_buf_pair_len = worker_buf_bytes / @sizeOf(OverlapPair);
+        // Tunable: how every parallel query splits its work into partitions and workers.
+        // Values below were picked by sweeping the benchmark suite; see PartitionSizer for meaning.
+        const partition_sizer: para.PartitionSizer = .{
+            .min_tasks_per_part = 4,
+            .min_parts_per_worker = 1,
+            .max_parts_per_worker = 32,
+        };
         const Self = @This();
 
         pub fn init(
@@ -207,8 +213,8 @@ pub fn SquareTree(
 
         pub fn updateBoundsParallel(self: *Self, io: Io) !void {
             self.sortStagedVolumes(); // TODO: add a parallel version of this
-            const parts = math.clamp(num_leaves / 8, 1, max_parts_per_worker * self.max_async_workers);
-            const workers = math.clamp(parts / max_parts_per_worker, 1, self.max_async_workers);
+            const parts = partition_sizer.getParts(num_leaves, self.max_async_workers);
+            const workers = partition_sizer.getWorkers(parts, self.max_async_workers);
             var range_iter = para.AtomicRangeIter.init(0, num_leaves, parts);
             var group: Io.Group = .init;
             errdefer group.cancel(io);
@@ -255,17 +261,16 @@ pub fn SquareTree(
             if (query_ids.len != query_vols.len) return error.InputLengthMismatch;
             if (!self.bounds_valid) return error.BoundsNotUpdated;
             var range_iter = para.AtomicRangeIter.init(0, query_ids.len, 1);
-            var out_counter: para.AtomicCounter = .{};
+            var shared_buf = para.SharedBuffer(OverlapPair).init(overlap_buf);
             self.findExtOverlapsWorker(
                 self.scratch_a[0..num_leaves],
                 self.scratch_b[0..num_leaves],
                 &range_iter,
-                &out_counter,
-                overlap_buf,
+                &shared_buf,
                 query_ids,
                 query_vols,
             );
-            return para.getOutputSlice(OverlapPair, &out_counter, overlap_buf);
+            return shared_buf.getItems();
         }
 
         /// Returns id pairs for stored volumes that overlap with the provided query volumes.
@@ -281,26 +286,24 @@ pub fn SquareTree(
             if (query_ids.len != query_vols.len) return error.InputLengthMismatch;
             if (!self.bounds_valid) return error.BoundsNotUpdated;
             if (query_ids.len == 0) return overlap_buf[0..0];
-            // TODO: see if there's a way to remove the below struct?
-            // This is a workaround since async won't allow a function with an anytype param.
+            // NOTE: async rejects anytype and comptime params, so the worker needs a concrete wrapper.
             const Worker = struct {
                 fn run(
                     tree: *const Self,
                     scratch_a: []CurveIndex,
                     scratch_b: []CurveIndex,
                     range_iter: *para.AtomicRangeIter,
-                    out_counter: *para.AtomicCounter,
-                    output: []OverlapPair,
+                    shared_buf: *para.SharedBuffer(OverlapPair),
                     ids: []const ClientId,
                     vols: @TypeOf(query_vols),
                 ) void {
-                    tree.findExtOverlapsWorker(scratch_a, scratch_b, range_iter, out_counter, output, ids, vols);
+                    tree.findExtOverlapsWorker(scratch_a, scratch_b, range_iter, shared_buf, ids, vols);
                 }
             };
-            const num_workers = @min(query_ids.len, self.max_async_workers);
-            const num_parts = @max(1, @min(query_ids.len / 16, max_parts_per_worker * num_workers));
+            const num_parts = partition_sizer.getParts(query_ids.len, self.max_async_workers);
+            const num_workers = partition_sizer.getWorkers(num_parts, self.max_async_workers);
             var range_iter = para.AtomicRangeIter.init(0, query_ids.len, num_parts);
-            var out_counter: para.AtomicCounter = .{};
+            var shared_buf = para.SharedBuffer(OverlapPair).init(overlap_buf);
             var group: Io.Group = .init;
             errdefer group.cancel(io);
             for (0..num_workers) |i| {
@@ -309,14 +312,13 @@ pub fn SquareTree(
                     self.scratch_a[i * num_leaves ..][0..num_leaves],
                     self.scratch_b[i * num_leaves ..][0..num_leaves],
                     &range_iter,
-                    &out_counter,
-                    overlap_buf,
+                    &shared_buf,
                     query_ids,
                     query_vols,
                 });
             }
             try group.await(io);
-            return para.getOutputSlice(OverlapPair, &out_counter, overlap_buf);
+            return shared_buf.getItems();
         }
 
         fn findExtOverlapsWorker(
@@ -324,8 +326,7 @@ pub fn SquareTree(
             scratch_a: []CurveIndex,
             scratch_b: []CurveIndex,
             range_iter: *para.AtomicRangeIter,
-            out_counter: *para.AtomicCounter,
-            output: []OverlapPair,
+            shared_buf: *para.SharedBuffer(OverlapPair),
             query_ids: []const ClientId,
             query_vols: anytype,
         ) void {
@@ -333,16 +334,10 @@ pub fn SquareTree(
             var res_list = std.ArrayList(OverlapPair).initBuffer(&pair_buf);
             while (range_iter.next()) |range| {
                 for (query_ids[range.start..range.end], query_vols[range.start..range.end]) |id, v| {
-                    self.findOverlapsBfs(&res_list, scratch_a, scratch_b, id, v, 0, 0) catch
-                        return reportStagingOverflow(out_counter, output);
-                    para.copyToSharedBuffer(OverlapPair, &res_list, out_counter, output);
+                    self.findOverlapsBfs(shared_buf, &res_list, scratch_a, scratch_b, id, v, 0, 0);
                 }
             }
-        }
-
-        /// TODO: replace this with something that can return a more useful, descriptive error.
-        fn reportStagingOverflow(out_counter: *para.AtomicCounter, output: []OverlapPair) void {
-            _ = out_counter.value.fetchAdd(output.len + 1, .monotonic);
+            shared_buf.appendSlice(res_list.items); // publish whatever is left staged
         }
 
         /// Returns ids for every pair of stored volumes that overlap with each other.
@@ -351,15 +346,14 @@ pub fn SquareTree(
         pub fn findSelfOverlaps(self: *Self, overlap_buf: []OverlapPair) Error![]OverlapPair {
             if (!self.bounds_valid) return error.BoundsNotUpdated;
             var range_iter = para.AtomicRangeIter.init(0, self.num_volumes, 1);
-            var out_counter: para.AtomicCounter = .{};
+            var shared_buf = para.SharedBuffer(OverlapPair).init(overlap_buf);
             self.findSelfOverlapWorker(
                 self.scratch_a[0..num_leaves],
                 self.scratch_b[0..num_leaves],
                 &range_iter,
-                &out_counter,
-                overlap_buf,
+                &shared_buf,
             );
-            return para.getOutputSlice(OverlapPair, &out_counter, overlap_buf);
+            return shared_buf.getItems();
         }
 
         /// Returns ids for every pair of stored volumes that overlap with each other.
@@ -373,11 +367,10 @@ pub fn SquareTree(
             if (!self.bounds_valid) return error.BoundsNotUpdated;
             const num_volumes = self.num_volumes;
             if (num_volumes == 0) return overlap_buf[0..0];
-            const num_workers = @min(num_volumes, self.max_async_workers);
-            // aim for >= 32 volumes per partition, but never fewer than one partition
-            const num_parts = math.clamp(num_volumes / 32, 1, max_parts_per_worker * num_workers);
+            const num_parts = partition_sizer.getParts(num_volumes, self.max_async_workers);
+            const num_workers = partition_sizer.getWorkers(num_parts, self.max_async_workers);
             var range_iter = para.AtomicRangeIter.init(0, num_volumes, num_parts);
-            var out_counter: para.AtomicCounter = .{};
+            var shared_buf = para.SharedBuffer(OverlapPair).init(overlap_buf);
             var group: Io.Group = .init;
             errdefer group.cancel(io);
             for (0..num_workers) |i| {
@@ -386,12 +379,11 @@ pub fn SquareTree(
                     self.scratch_a[i * num_leaves ..][0..num_leaves],
                     self.scratch_b[i * num_leaves ..][0..num_leaves],
                     &range_iter,
-                    &out_counter,
-                    overlap_buf,
+                    &shared_buf,
                 });
             }
             try group.await(io);
-            return para.getOutputSlice(OverlapPair, &out_counter, overlap_buf);
+            return shared_buf.getItems();
         }
 
         fn findSelfOverlapWorker(
@@ -399,8 +391,7 @@ pub fn SquareTree(
             scratch_a: []CurveIndex,
             scratch_b: []CurveIndex,
             range_iter: *para.AtomicRangeIter,
-            out_counter: *para.AtomicCounter,
-            output: []OverlapPair,
+            shared_buf: *para.SharedBuffer(OverlapPair),
         ) void {
             var pair_buf: [worker_buf_pair_len]OverlapPair = undefined;
             var res_list = std.ArrayList(OverlapPair).initBuffer(&pair_buf);
@@ -410,6 +401,7 @@ pub fn SquareTree(
                 for (range.start..range.end) |i| {
                     const vol_index = self.nextVolIndex(&leaf_cursor, i);
                     self.findOverlapsBfs(
+                        shared_buf,
                         &res_list,
                         scratch_a,
                         scratch_b,
@@ -417,10 +409,10 @@ pub fn SquareTree(
                         self.leaf_data[i],
                         vol_index.leaf,
                         vol_index.offset + 1,
-                    ) catch return reportStagingOverflow(out_counter, output);
-                    para.copyToSharedBuffer(OverlapPair, &res_list, out_counter, output);
+                    );
                 }
             }
+            shared_buf.appendSlice(res_list.items); // publish whatever is left staged
         }
 
         /// Finds stored volumes nearest to each query point, nearest-first.
@@ -459,8 +451,8 @@ pub fn SquareTree(
             if (!self.bounds_valid) return error.BoundsNotUpdated;
             for (bufs) |buf| if (k > buf.len) return error.BufferCapacityExceeded;
             if (bufs.len == 0) return bufs;
-            const num_workers = @min(bufs.len, self.max_async_workers);
-            const num_parts = @min(bufs.len, 8 * num_workers);
+            const num_parts = partition_sizer.getParts(bufs.len, self.max_async_workers);
+            const num_workers = partition_sizer.getWorkers(num_parts, self.max_async_workers);
             var range_iter = para.AtomicRangeIter.init(0, bufs.len, num_parts);
             var group: Io.Group = .init;
             errdefer group.cancel(io);
@@ -688,6 +680,7 @@ pub fn SquareTree(
         /// Performs a BFS for stored volumes that overlap with the provided query volume.
         fn findOverlapsBfs(
             self: *const Self,
+            shared_buf: *para.SharedBuffer(OverlapPair),
             res_list: *std.ArrayList(OverlapPair),
             slice_a: []CurveIndex,
             slice_b: []CurveIndex,
@@ -695,7 +688,7 @@ pub fn SquareTree(
             query_vol: anytype,
             start_leaf: CurveIndex,
             start_vol_index: DataIndex,
-        ) !void {
+        ) void {
             // search through higher-level nodes first
             const query_aabb: Box2f = query_vol.getBoundingBox();
             var search_list = std.ArrayList(CurveIndex).initBuffer(slice_a);
@@ -704,10 +697,10 @@ pub fn SquareTree(
                     .min = query_aabb.min - self.max_half_extent,
                     .max = query_aabb.max + self.max_half_extent,
                 };
-                try self.indexer.getTopLevelIndexesForBox(&search_list, n_box, start_leaf);
+                self.indexer.getTopLevelIndexesForBox(&search_list, n_box, start_leaf);
             } else { // check all level 0 nodes
                 const pred_0 = Indexer.getLeafPredecessor(start_leaf, 0);
-                for (pred_0..nodes_in_level[0]) |k| try search_list.appendBounded(@intCast(k));
+                for (pred_0..nodes_in_level[0]) |k| search_list.appendAssumeCapacity(@intCast(k));
             }
             var next_list = std.ArrayList(CurveIndex).initBuffer(slice_b);
             for (0..depth - 1) |lvl| {
@@ -718,7 +711,7 @@ pub fn SquareTree(
                     const first_child: usize = Indexer.getFirstChild(i);
                     const start = @max(pred_next, first_child);
                     const end = first_child + Indexer.num_children;
-                    for (start..end) |k| try next_list.appendBounded(@intCast(k));
+                    for (start..end) |k| next_list.appendAssumeCapacity(@intCast(k));
                 }
                 // Swap the buffers
                 const tmp = search_list;
@@ -735,7 +728,11 @@ pub fn SquareTree(
                 const start = if (i == start_leaf) start_vol_index else 0;
                 for (items[start..], ids[start..]) |stored_vol, id| {
                     if (!vol.checkVolumesOverlap(query_vol, stored_vol)) continue;
-                    try res_list.appendBounded(.{ query_id, id });
+                    if (res_list.items.len == worker_buf_pair_len) { // publish a full batch
+                        shared_buf.appendSlice(res_list.items);
+                        res_list.clearRetainingCapacity();
+                    }
+                    res_list.appendAssumeCapacity(.{ query_id, id });
                 }
             }
         }

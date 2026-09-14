@@ -199,7 +199,7 @@ pub fn Indexer2f(
             res_list: *std.ArrayList(CurveIndex),
             b: Box2f,
             start_leaf: CurveIndex,
-        ) !void {
+        ) void {
             const lo = self.getTopLevelCoordsForPoint(b.min);
             const hi = self.getTopLevelCoordsForPoint(b.max);
             if (start_leaf > 0) { // TODO: check if putting the branch here actually helps performance
@@ -208,7 +208,7 @@ pub fn Indexer2f(
                     for (lo.col..hi.col + 1) |col| {
                         const coords: GridCoords = .{ .row = @intCast(row), .col = @intCast(col) };
                         const index = getIndexForGridCoords(top_levels, coords);
-                        if (index >= start_0) try res_list.appendBounded(index);
+                        if (index >= start_0) res_list.appendAssumeCapacity(index);
                     }
                 }
             } else {
@@ -216,7 +216,7 @@ pub fn Indexer2f(
                     for (lo.col..hi.col + 1) |col| {
                         const coords: GridCoords = .{ .row = @intCast(row), .col = @intCast(col) };
                         const index = getIndexForGridCoords(top_levels, coords);
-                        try res_list.appendBounded(index);
+                        res_list.appendAssumeCapacity(index);
                     }
                 }
             }

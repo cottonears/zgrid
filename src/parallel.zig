@@ -77,7 +77,7 @@ pub fn SharedBuffer(comptime T: type) type {
         /// Call after writers have finished their work.
         pub fn getItems(self: *const Self) ![]T {
             const len = self.counter.value.load(.monotonic);
-            if (len > self.items.len) return error.SharedBufferCapacityExceeded;
+            if (len > self.items.len) return error.BufferCapacityExceeded;
             return self.items[0..len];
         }
 
@@ -90,32 +90,29 @@ pub fn SharedBuffer(comptime T: type) type {
     };
 }
 
-/// Claims room in an output buffer by incrementing the atomic counter, writes results, then empties the list
-pub fn copyToSharedBuffer(
-    comptime T: type,
-    res_list: *std.ArrayList(T),
-    out_counter: *AtomicCounter,
-    output: []T,
-) void {
-    const items = res_list.items;
-    if (items.len == 0) return;
-    const start = out_counter.value.fetchAdd(items.len, .monotonic);
-    // TODO: struct version should write up until the end of the buffer (friendlier for callers who may want to partially recover).
-    if (start + items.len <= output.len) @memcpy(output[start..][0..items.len], items);
-    res_list.clearRetainingCapacity();
-}
+/// Sizes the partition count and worker count for a parallel workload.
+/// NOTE: Defaults will not suit every workflow: measure and tune!
+pub const PartitionSizer = struct {
+    min_tasks_per_part: usize = 4,
 
-// TODO: struct version should provider friendlier version of the below, allowing all written results to be recovered
-/// Gets the output slice, or an error if buffer capacity was exceeded
-pub fn getOutputSlice(
-    comptime T: type,
-    out_counter: *const AtomicCounter,
-    output: []T,
-) ![]T {
-    const len = out_counter.value.load(.monotonic);
-    if (len > output.len) return error.BufferCapacityExceeded;
-    return output[0..len];
-}
+    min_parts_per_worker: usize = 1,
+    max_parts_per_worker: usize = 32,
+    const Self = @This();
+
+    /// Splits num_tasks into partitions based on the current constraints.
+    pub fn getParts(self: Self, num_tasks: usize, max_workers: u16) usize {
+        std.debug.assert(self.min_tasks_per_part > 0);
+        const cap = self.max_parts_per_worker * @max(1, @as(usize, max_workers));
+        return std.math.clamp(num_tasks / self.min_tasks_per_part, 1, cap);
+    }
+
+    /// Scales the worker count with the partition count, never exceeding `max_workers`.
+    pub fn getWorkers(self: Self, num_parts: usize, max_workers: u16) u16 {
+        std.debug.assert(self.min_parts_per_worker > 0);
+        const n = std.math.clamp(num_parts / self.min_parts_per_worker, 1, @max(1, @as(usize, max_workers)));
+        return @intCast(n);
+    }
+};
 
 const testing = std.testing;
 
@@ -178,7 +175,7 @@ test "test write to shared buffer" {
         group.async(testing.io, Work.doWork, .{ &range_iter, &in_buf, &shared_buf });
     }
     try group.await(testing.io);
-    try testing.expectError(error.SharedBufferCapacityExceeded, shared_buf.getItems());
+    try testing.expectError(error.BufferCapacityExceeded, shared_buf.getItems());
     const out_slice = shared_buf.getItemsNoError();
     try testing.expectEqual(out_buf.len, out_slice.len);
     // for (out_slice, 0..) |v, i| {
