@@ -150,19 +150,8 @@ pub fn SquareTree(
         ) Error!void {
             if (self.num_volumes + vols.len > self.staged_data.len) return error.TreeCapacityExceeded;
             if (vols.len != client_ids.len) return error.InputLengthMismatch;
-            const staged = self.staged_indexes[self.num_volumes..][0..vols.len];
-            if (Indexer.use_morton_bit_index) self.indexer.getLeafIndexesForVolumes(vols, staged);
             var max_half_extent = self.max_half_extent;
-            for (vols, client_ids, staged) |v, c, *leaf_slot| {
-                if (!Indexer.use_morton_bit_index) {
-                    leaf_slot.* = self.indexer.getLeafIndexForPoint(v.getCentre());
-                }
-                const leaf_index = leaf_slot.*;
-                const data_index = self.leaf_counts[leaf_index];
-                if (data_index == math.maxInt(DataIndex)) {
-                    self.max_half_extent = max_half_extent;
-                    return error.LeafCapacityExceeded;
-                }
+            for (vols, client_ids) |v, c| {
                 if (compressed) {
                     const bb = v.getBoundingBox();
                     const he = calc.scaledVec(0.5, bb.max - bb.min);
@@ -170,7 +159,6 @@ pub fn SquareTree(
                 }
                 self.staged_data[self.num_volumes] = v;
                 self.staged_ids[self.num_volumes] = c;
-                self.leaf_counts[leaf_index] = data_index + 1;
                 self.num_volumes += 1;
             }
             self.max_half_extent = max_half_extent;
@@ -186,7 +174,8 @@ pub fn SquareTree(
         }
 
         /// Diagnostic: the largest number of volumes staged in any single leaf.
-        pub fn getMaxLeafOccupancy(self: *const Self) DataIndex {
+        pub fn getMaxLeafOccupancy(self: *const Self) !DataIndex {
+            if (!self.bounds_valid) return Error.BoundsNotUpdated;
             var max_count: DataIndex = 0;
             for (self.leaf_counts) |count| max_count = @max(max_count, count);
             return max_count;
@@ -194,7 +183,8 @@ pub fn SquareTree(
 
         /// Gets the total number of volumes stored under a node in this tree's hierarchy.
         /// Counts the volumes stored under all successors' leaves.
-        pub fn getOccupancyUnderNode(self: *const Self, lvl: u4, node: CurveIndex) usize {
+        pub fn getOccupancyUnderNode(self: *const Self, lvl: u4, node: CurveIndex) !usize {
+            if (!self.bounds_valid) return Error.BoundsNotUpdated;
             std.debug.assert(lvl < depth);
             const succ_start = Indexer.getFirstLeafSuccessor(@truncate(lvl), node);
             const succ_end = succ_start + Indexer.getNumberLeafSuccessors(@truncate(lvl));
@@ -213,8 +203,8 @@ pub fn SquareTree(
         /// Grows all nodes' bounding volumes to cover all volumes stored under them.
         /// Sorts any volumes staged by `addVolume` into their final position.
         /// Single-threaded but not thread-safe.
-        pub fn updateBounds(self: *Self) void {
-            self.sortStagedVolumes();
+        pub fn updateBounds(self: *Self) !void {
+            try self.storeStagedVolumes();
             var range_iter = para.AtomicRangeIter.init(0, nodes_in_level[0], 1);
             self.updateSubtreeBvsWorker(0, &range_iter);
             self.bounds_valid = true;
@@ -224,7 +214,7 @@ pub fn SquareTree(
         /// Sorts any volumes staged by `addVolume` into their final position.
         /// Does work in parallel if the io implementation supports it; not thread-safe.
         pub fn updateBoundsParallel(self: *Self, io: Io) !void {
-            self.sortStagedVolumes();
+            try self.storeStagedVolumes();
             const target_parts = update_bv_parts_per_worker * @as(usize, self.max_async_workers);
             const parts = @min(bv_top_nodes, math.ceilPowerOfTwoAssert(usize, target_parts));
             const workers = @min(self.max_async_workers, parts);
@@ -632,15 +622,33 @@ pub fn SquareTree(
             return self.leaf_ids[start..self.leaf_starts[@as(usize, leaf_num) + 1]];
         }
 
-        /// Sorts the staged volumes into leaf_data by leaf index, filling in leaf_starts.
-        fn sortStagedVolumes(self: *Self) void {
+        /// Indexes, sorts, and stores staged volumes into leaf_data in leaf_starts.
+        fn storeStagedVolumes(self: *Self) !void {
+            // TODO: try replace the below with radix-sort to allow for parallel execution
+            // Something like this:
+            // 1. compute leaf_index for every volume
+            // 2. coarse radix partition by high bits of leaf_index
+            // 3. process independent coarse buckets
+            //    - count leaves
+            //    - prefix locally
+            //    - scatter
+            // 4. Build global leaf_starts
+            // see https://www.interviewcake.com/concept/python/radix-sort
+            const num_vols = self.num_volumes;
+            if (num_vols > self.leaf_data.len) return Error.TreeCapacityExceeded;
+            for (self.staged_data[0..num_vols], 0..) |v, i| {
+                const leaf_index = self.indexer.getLeafIndexForPoint(v.getCentre());
+                self.staged_indexes[i] = leaf_index;
+                const data_index = self.leaf_counts[leaf_index];
+                if (data_index == math.maxInt(DataIndex)) return Error.LeafCapacityExceeded;
+                self.leaf_counts[leaf_index] = data_index + 1;
+            }
             self.leaf_starts[0] = 0;
             var offset: StartIndex = 0;
             for (self.leaf_counts, 1..) |count, i| {
                 self.leaf_starts[i] = offset;
                 offset += count;
             }
-            const num_vols = self.num_volumes;
             for (
                 self.staged_data[0..num_vols],
                 self.staged_ids[0..num_vols],
@@ -878,7 +886,7 @@ test "square tree add remove" {
     const indexes = calc.getRange(u32, test_bodies.len);
     try qt.addVolumes(&test_bodies, &indexes);
     try testing.expectEqual(3, qt.num_volumes);
-    qt.updateBounds();
+    try qt.updateBounds();
     // check volumes retrieved by id come back unchanged
     for (0..QuadTree.num_leaves) |leaf_num_usize| {
         const leaf_num: QuadTree.CurveIndex = @intCast(leaf_num_usize);
@@ -905,7 +913,7 @@ test "staged volumes keep their rank within a leaf" {
         const indexes = [_]u32{@intCast(i)};
         try qt.addVolumes(&balls, &indexes);
     }
-    qt.updateBounds();
+    try qt.updateBounds();
     // both leaves should see their volumes in insertion order
     const leaf_even = qt.indexer.getLeafIndexForPoint(.{ 0.1, 0.1 });
     const leaf_odd = qt.indexer.getLeafIndexForPoint(.{ 0.9, 0.9 });
@@ -975,7 +983,7 @@ test "short overlap buffer returns a capacity error" {
     const balls = [_]Ball2f{.{ .centre = .{ 0, 0 }, .radius = 0.5 }} ** 16;
     const ids = calc.getRange(u32, balls.len);
     try tree.addVolumes(&balls, &ids);
-    tree.updateBounds();
+    try tree.updateBounds();
     var buf: [32]Tree.OverlapPair = undefined;
     try testing.expectError(error.BufferCapacityExceeded, tree.findSelfOverlaps(buf[0..4]));
     try testing.expectError(
@@ -1003,7 +1011,7 @@ test "find neighbours matches brute force" {
     const boxes = test_vols.getRandomBodies(Box2f);
     const indexes = calc.getRange(Tree.ClientIdType, num_vols);
     try tree.addVolumes(boxes, &indexes);
-    tree.updateBounds();
+    try tree.updateBounds();
     // check for closest neighbours between all pairs
     var expected: [num_vols][3]Tree.Neighbour = undefined;
     var neighbour_storage: [num_vols][3]Tree.Neighbour = undefined;
@@ -1065,7 +1073,7 @@ test "occupancy counts are accurate" {
     const boxes = test_vols.getRandomBodies(Box2f);
     const indexes = calc.getRange(Tree.ClientIdType, num_vols);
     try tree.addVolumes(boxes, &indexes);
-    tree.updateBounds();
+    try tree.updateBounds();
     // compute actual occupancy rates
     var expected_top_occupancy: [4]usize = [_]usize{0} ** 4;
     var expected_mle: usize = 0;
@@ -1078,12 +1086,12 @@ test "occupancy counts are accurate" {
     // compare with square tree methods
     var total_occupancy: usize = 0;
     for (0..4) |anc_index| {
-        const anc_occupancy = tree.getOccupancyUnderNode(0, @truncate(anc_index));
+        const anc_occupancy = try tree.getOccupancyUnderNode(0, @truncate(anc_index));
         try testing.expectEqual(expected_top_occupancy[anc_index], anc_occupancy);
         total_occupancy += anc_occupancy;
     }
     try testing.expectEqual(num_vols, total_occupancy);
-    const mle = tree.getMaxLeafOccupancy();
+    const mle = try tree.getMaxLeafOccupancy();
     try testing.expectEqual(expected_mle, @as(usize, @intCast(mle)));
 }
 
@@ -1115,7 +1123,7 @@ test "draw square trees svg" {
         const bodies = test_vols.getRandomBodies(Tree.VolumeType);
         const indexes = calc.getRange(u32, num_vols);
         try tree.addVolumes(bodies, &indexes);
-        tree.updateBounds();
+        try tree.updateBounds();
         var canvas = try tree.drawTreeSvg(test_alloc, true);
         defer canvas.deinit(test_alloc);
         var buf: [512]u8 = undefined;

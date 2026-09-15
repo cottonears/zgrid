@@ -451,11 +451,12 @@ fn benchmarkTree(
         });
     }
 
+    const max_occ = try tree.getMaxLeafOccupancy();
     const stats_str = try table.getStatsTable(allocator);
     defer allocator.free(stats_str);
     std.debug.print(
         "{s}:\nmax leaf {}, overlaps {}, neighbours {}, ext-overlaps {}, size {}B\n{s}\n",
-        .{ Indexer.type_label, tree.getMaxLeafOccupancy(), overlaps, neighbours, ext_overlaps, @sizeOf(TreeType), stats_str },
+        .{ Indexer.type_label, max_occ, overlaps, neighbours, ext_overlaps, @sizeOf(TreeType), stats_str },
     );
 }
 

@@ -143,45 +143,42 @@ pub fn Indexer2f(
             if (use_morton_bit_index) {
                 const xy = calc.getDeinterleaved(leaf_index);
                 return .{ .row = xy[1], .col = xy[0] };
+            } else {
+                // TODO: implement a comptime fn that expands small lookup tables by tiling.
+                // Don't expand too large (want the LUT to comfortably fit in L1).
+                // This might improve performance by limiting recursion.
+                var row: GridIndex = 0;
+                var col: GridIndex = 0;
+                inline for (0..effective_depth) |i| {
+                    const lvl_diff = effective_depth - i - 1;
+                    const index_i = (leaf_index >> lvl_diff * lvl_bitshift) & (num_children - 1);
+                    const grid_coords = grid_coord_map[index_i];
+                    row = (row << axis_bitshift) + @as(GridIndex, @truncate(grid_coords[0]));
+                    col = (col << axis_bitshift) + @as(GridIndex, @truncate(grid_coords[1]));
+                }
+                return .{ .row = row, .col = col };
             }
-            return getGridCoordsForIndexMapped(leaf_index);
-        }
-
-        fn getGridCoordsForIndexMapped(leaf_index: CurveIndex) GridCoords {
-            var row: GridIndex = 0;
-            var col: GridIndex = 0;
-            inline for (0..effective_depth) |i| {
-                const lvl_diff = effective_depth - i - 1;
-                const index_i = (leaf_index >> lvl_diff * lvl_bitshift) & (num_children - 1);
-                const grid_coords = grid_coord_map[index_i];
-                row = (row << axis_bitshift) + @as(GridIndex, @truncate(grid_coords[0]));
-                col = (col << axis_bitshift) + @as(GridIndex, @truncate(grid_coords[1]));
-            }
-            return .{ .row = row, .col = col };
         }
 
         /// Gets the curve index for the provided point in the leaf-level grid.
         /// Map from grid coords -> curve index.
         fn getIndexForGridCoords(comptime digits: u8, c: GridCoords) CurveIndex {
             if (use_morton_bit_index) {
-                // every caller passes coords already reduced to `digits` digits, so the
-                // interleave needs no masking; the mapped path below ignores higher bits
-                std.debug.assert(@max(c.col, c.row) >> (axis_bitshift * digits) == 0);
                 return @intCast(calc.getInterleaved(.{ c.col, c.row }));
+            } else {
+                // TODO: implement a comptime fn that expands small lookup tables by tiling.
+                // Don't expand too large (want the LUT to comfortably fit in L1).
+                // This might improve performance by limiting recursion.
+                var index: CurveIndex = 0;
+                inline for (0..digits) |i| {
+                    const lvl_diff = digits - i - 1;
+                    const lvl_row = (c.row >> axis_bitshift * lvl_diff) & (base - 1);
+                    const lvl_col = (c.col >> axis_bitshift * lvl_diff) & (base - 1);
+                    const index_i: CurveIndex = @intCast(index_map[lvl_row][lvl_col]);
+                    index = (index << lvl_bitshift) + index_i;
+                }
+                return index;
             }
-            return getIndexForGridCoordsMapped(digits, c);
-        }
-
-        fn getIndexForGridCoordsMapped(comptime digits: u8, c: GridCoords) CurveIndex {
-            var index: CurveIndex = 0;
-            inline for (0..digits) |i| {
-                const lvl_diff = digits - i - 1;
-                const lvl_row = (c.row >> axis_bitshift * lvl_diff) & (base - 1);
-                const lvl_col = (c.col >> axis_bitshift * lvl_diff) & (base - 1);
-                const index_i: CurveIndex = @intCast(index_map[lvl_row][lvl_col]);
-                index = (index << lvl_bitshift) + index_i;
-            }
-            return index;
         }
 
         /// Gets the bitshift required to move a leaf index up to the identified level.
@@ -213,29 +210,6 @@ pub fn Indexer2f(
             return getIndexForGridCoords(effective_depth, grid_coord);
         }
 
-        /// Gets the leaf indexes for a batch of volumes, writing them in order to `out`.
-        /// Faster than calling `getLeafIndexForPoint` per volume when the bit path is in use.
-        pub fn getLeafIndexesForVolumes(self: *const Self, vols: anytype, out: []CurveIndex) void {
-            std.debug.assert(out.len >= vols.len);
-            if (!use_morton_bit_index) {
-                for (vols, out[0..vols.len]) |v, *o| o.* = self.getLeafIndexForPoint(v.getCentre());
-                return;
-            }
-            var cols: @Vector(index_batch_len, u32) = undefined;
-            var rows: @Vector(index_batch_len, u32) = undefined;
-            var i: usize = 0;
-            while (i + index_batch_len <= vols.len) : (i += index_batch_len) {
-                inline for (0..index_batch_len) |j| {
-                    const c = self.getGridCoordsForPoint(vols[i + j].getCentre());
-                    cols[j] = c.col;
-                    rows[j] = c.row;
-                }
-                const codes = calc.getInterleavedVec(cols, rows);
-                inline for (0..index_batch_len) |j| out[i + j] = @intCast(codes[j]);
-            }
-            while (i < vols.len) : (i += 1) out[i] = self.getLeafIndexForPoint(vols[i].getCentre());
-        }
-
         /// Gets the indexes of top-level cells that lie within the box b.
         pub fn getTopLevelIndexesForBox(
             self: *const Self,
@@ -245,22 +219,12 @@ pub fn Indexer2f(
         ) void {
             const lo = self.getTopLevelCoordsForPoint(b.min);
             const hi = self.getTopLevelCoordsForPoint(b.max);
-            if (start_leaf > 0) { // TODO: check if putting the branch here actually helps performance
-                const start_0 = getLeafPredecessor(start_leaf, 0);
-                for (lo.row..hi.row + 1) |row| {
-                    for (lo.col..hi.col + 1) |col| {
-                        const coords: GridCoords = .{ .row = @intCast(row), .col = @intCast(col) };
-                        const index = getIndexForGridCoords(top_levels, coords);
-                        if (index >= start_0) res_list.appendAssumeCapacity(index);
-                    }
-                }
-            } else {
-                for (lo.row..hi.row + 1) |row| {
-                    for (lo.col..hi.col + 1) |col| {
-                        const coords: GridCoords = .{ .row = @intCast(row), .col = @intCast(col) };
-                        const index = getIndexForGridCoords(top_levels, coords);
-                        res_list.appendAssumeCapacity(index);
-                    }
+            const start_0 = getLeafPredecessor(start_leaf, 0);
+            for (lo.row..hi.row + 1) |row| {
+                for (lo.col..hi.col + 1) |col| {
+                    const coords: GridCoords = .{ .row = @intCast(row), .col = @intCast(col) };
+                    const index = getIndexForGridCoords(top_levels, coords);
+                    if (index >= start_0) res_list.appendAssumeCapacity(index);
                 }
             }
         }
