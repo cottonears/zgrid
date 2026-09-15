@@ -37,36 +37,51 @@ pub fn getPow2nSequence(
 /// Adapted from 'Bit Twiddling Hacks' by Sean Eron Anderson:
 /// https://graphics.stanford.edu/~seander/bithacks.html#InterleaveBMN
 pub fn getInterleaved(xy: [2]u16) u32 {
-    // TODO: come up with a generalised version for shorter integers
-    // Also, try leverage the following hardware instructions (when available):
+    // TODO: try leverage the following hardware instructions (when available):
     // https://geoff.space/2024/06/pext-and-pdep/
-    var x_u32: u32 = xy[0];
-    x_u32 = (x_u32 | (x_u32 << 8)) & 0x00FF00FF;
-    x_u32 = (x_u32 | (x_u32 << 4)) & 0x0F0F0F0F;
-    x_u32 = (x_u32 | (x_u32 << 2)) & 0x33333333;
-    x_u32 = (x_u32 | (x_u32 << 1)) & 0x55555555;
-    var y_u32: u32 = xy[1];
-    y_u32 = (y_u32 | (y_u32 << 8)) & 0x00FF00FF;
-    y_u32 = (y_u32 | (y_u32 << 4)) & 0x0F0F0F0F;
-    y_u32 = (y_u32 | (y_u32 << 2)) & 0x33333333;
-    y_u32 = (y_u32 | (y_u32 << 1)) & 0x55555555;
-    return x_u32 | (y_u32 << 1);
+    return getSpread(xy[0]) | (getSpread(xy[1]) << 1);
+}
+
+/// Spreads the low 16 bits of v out over 32 bits, ready to be interleaved.
+fn getSpread(v: u32) u32 {
+    var x = v;
+    x = (x | (x << 8)) & 0x00FF00FF;
+    x = (x | (x << 4)) & 0x0F0F0F0F;
+    x = (x | (x << 2)) & 0x33333333;
+    x = (x | (x << 1)) & 0x55555555;
+    return x;
 }
 
 pub fn getDeinterleaved(z: u32) [2]u16 {
     // TODO: as per above function's notes
-    var x = z & 0x55555555;
+    // Shift z right by 1 for y, so its odd bits move into the even positions
+    return .{ @truncate(getCompacted(z)), @truncate(getCompacted(z >> 1)) };
+}
+
+/// Gathers the even bits of v back down into its low 16 bits; inverse of `getSpread`.
+fn getCompacted(v: u32) u32 {
+    var x = v & 0x55555555;
     x = (x | (x >> 1)) & 0x33333333;
     x = (x | (x >> 2)) & 0x0F0F0F0F;
     x = (x | (x >> 4)) & 0x00FF00FF;
     x = (x | (x >> 8)) & 0x0000FFFF;
-    // Shift z right by 1 first so y's odd bits move into the even positions
-    var y = (z >> 1) & 0x55555555;
-    y = (y | (y >> 1)) & 0x33333333;
-    y = (y | (y >> 2)) & 0x0F0F0F0F;
-    y = (y | (y >> 4)) & 0x00FF00FF;
-    y = (y | (y >> 8)) & 0x0000FFFF;
-    return .{ @truncate(x), @truncate(y) };
+    return x;
+}
+
+/// Spreads the low 16 bits of each lane out over 32 bits, ready to be interleaved.
+fn getSpreadVec(v: anytype) @TypeOf(v) {
+    const V = @TypeOf(v);
+    var x = v;
+    x = (x | (x << @splat(8))) & @as(V, @splat(0x00FF00FF));
+    x = (x | (x << @splat(4))) & @as(V, @splat(0x0F0F0F0F));
+    x = (x | (x << @splat(2))) & @as(V, @splat(0x33333333));
+    x = (x | (x << @splat(1))) & @as(V, @splat(0x55555555));
+    return x;
+}
+
+/// Computes a 32-bit Morton code per lane, for a batch of x + y grid coords.
+pub fn getInterleavedVec(x: anytype, y: @TypeOf(x)) @TypeOf(x) {
+    return getSpreadVec(x) | (getSpreadVec(y) << @splat(1));
 }
 
 pub fn sortPairsLessThan(comptime T: type, pairs: [][2]T) void {

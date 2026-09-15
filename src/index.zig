@@ -112,6 +112,8 @@ pub fn Indexer2f(
         const index_map = Curve.getCurveIndexMap(base, curve_type);
         const grid_coord_map = Curve.getInverseIndexMap(base, curve_type);
         const GridIndex = u16; // NOTE: any smaller is slower (stored as register temporary).
+        pub const use_morton_bit_index = curve_type == .Morton and effective_depth >= 4;
+        const index_batch_len = 8;
         const GridCoords = struct { row: GridIndex, col: GridIndex };
         const Self = @This();
 
@@ -138,6 +140,14 @@ pub fn Indexer2f(
         /// Gets the row + column number for the provided index.
         /// Map from curve index -> grid coords.
         fn getGridCoordsForIndex(leaf_index: CurveIndex) GridCoords {
+            if (use_morton_bit_index) {
+                const xy = calc.getDeinterleaved(leaf_index);
+                return .{ .row = xy[1], .col = xy[0] };
+            }
+            return getGridCoordsForIndexMapped(leaf_index);
+        }
+
+        fn getGridCoordsForIndexMapped(leaf_index: CurveIndex) GridCoords {
             var row: GridIndex = 0;
             var col: GridIndex = 0;
             inline for (0..effective_depth) |i| {
@@ -153,6 +163,16 @@ pub fn Indexer2f(
         /// Gets the curve index for the provided point in the leaf-level grid.
         /// Map from grid coords -> curve index.
         fn getIndexForGridCoords(comptime digits: u8, c: GridCoords) CurveIndex {
+            if (use_morton_bit_index) {
+                // every caller passes coords already reduced to `digits` digits, so the
+                // interleave needs no masking; the mapped path below ignores higher bits
+                std.debug.assert(@max(c.col, c.row) >> (axis_bitshift * digits) == 0);
+                return @intCast(calc.getInterleaved(.{ c.col, c.row }));
+            }
+            return getIndexForGridCoordsMapped(digits, c);
+        }
+
+        fn getIndexForGridCoordsMapped(comptime digits: u8, c: GridCoords) CurveIndex {
             var index: CurveIndex = 0;
             inline for (0..digits) |i| {
                 const lvl_diff = digits - i - 1;
@@ -191,6 +211,29 @@ pub fn Indexer2f(
         pub fn getLeafIndexForPoint(self: *const Self, point: Vec2f) CurveIndex {
             const grid_coord = self.getGridCoordsForPoint(point);
             return getIndexForGridCoords(effective_depth, grid_coord);
+        }
+
+        /// Gets the leaf indexes for a batch of volumes, writing them in order to `out`.
+        /// Faster than calling `getLeafIndexForPoint` per volume when the bit path is in use.
+        pub fn getLeafIndexesForVolumes(self: *const Self, vols: anytype, out: []CurveIndex) void {
+            std.debug.assert(out.len >= vols.len);
+            if (!use_morton_bit_index) {
+                for (vols, out[0..vols.len]) |v, *o| o.* = self.getLeafIndexForPoint(v.getCentre());
+                return;
+            }
+            var cols: @Vector(index_batch_len, u32) = undefined;
+            var rows: @Vector(index_batch_len, u32) = undefined;
+            var i: usize = 0;
+            while (i + index_batch_len <= vols.len) : (i += index_batch_len) {
+                inline for (0..index_batch_len) |j| {
+                    const c = self.getGridCoordsForPoint(vols[i + j].getCentre());
+                    cols[j] = c.col;
+                    rows[j] = c.row;
+                }
+                const codes = calc.getInterleavedVec(cols, rows);
+                inline for (0..index_batch_len) |j| out[i + j] = @intCast(codes[j]);
+            }
+            while (i < vols.len) : (i += 1) out[i] = self.getLeafIndexForPoint(vols[i].getCentre());
         }
 
         /// Gets the indexes of top-level cells that lie within the box b.
