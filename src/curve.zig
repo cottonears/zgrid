@@ -1,0 +1,405 @@
+const std = @import("std");
+const math = std.math;
+
+pub const Curve = enum {
+    // TODO: add support for Hilbert curves!
+    // the standard Lebesgue / Morton Z-shaped curve produced by bit-interleaving
+    Morton2,
+    Morton4,
+    Morton8,
+    Morton16,
+    Morton32,
+    Morton64,
+    Morton128,
+    Morton256,
+    // boing
+    Spring4,
+    Spring16,
+    Spring64,
+    Spring256,
+    // fancy
+    Zigzag4,
+    Zigzag16,
+    Zigzag64,
+    Zigzag256,
+
+    pub fn base(comptime curve: Curve) u8 {
+        return switch (curve) {
+            .Morton4, .Morton8, .Morton16, .Morton32, .Morton64, .Morton128, .Morton256 => 2,
+            else => 4,
+        };
+    }
+
+    pub fn degree(comptime curve: Curve) u4 {
+        return switch (curve) {
+            .Morton2 => 1,
+            .Morton4 => 2,
+            .Morton8 => 3,
+            .Morton16 => 4,
+            .Morton32 => 5,
+            .Morton64 => 6,
+            .Morton128 => 7,
+            .Morton256 => 8,
+            .Spring4 => 1,
+            .Spring16 => 2,
+            .Spring64 => 3,
+            .Spring256 => 4,
+            .Zigzag4 => 1,
+            .Zigzag16 => 2,
+            .Zigzag64 => 3,
+            .Zigzag256 => 4,
+        };
+    }
+
+    pub fn index(comptime curve: Curve) type {
+        return switch (curve) {
+            .Morton2 => u2,
+            .Morton4 => u4,
+            .Morton8 => u6,
+            .Morton16 => u8,
+            .Morton32 => u10,
+            .Morton64 => u12,
+            .Morton128 => u14,
+            .Morton256 => u16,
+            .Spring4 => u4,
+            .Spring16 => u8,
+            .Spring64 => u12,
+            .Spring256 => u16,
+            .Zigzag4 => u4,
+            .Zigzag16 => u8,
+            .Zigzag64 => u12,
+            .Zigzag256 => u16,
+        };
+    }
+
+    pub fn size(comptime curve: Curve) usize {
+        return switch (curve) {
+            .Morton2 => 2,
+            .Morton4 => 4,
+            .Morton8 => 8,
+            .Morton16 => 16,
+            .Morton32 => 32,
+            .Morton64 => 64,
+            .Morton128 => 128,
+            .Morton256 => 256,
+            .Spring4 => 4,
+            .Spring16 => 16,
+            .Spring64 => 64,
+            .Spring256 => 256,
+            .Zigzag4 => 4,
+            .Zigzag16 => 16,
+            .Zigzag64 => 64,
+            .Zigzag256 => 256,
+        };
+    }
+
+    // NOTE: mutli-level lookup tables are used to save compile time
+    const morton_index_map_1 = [2][2]u2{
+        .{ 0x0, 0x1 },
+        .{ 0x2, 0x3 },
+    };
+
+    const morton_index_map_2 = [4][4]u4{
+        .{ 0x0, 0x1, 0x4, 0x5 },
+        .{ 0x2, 0x3, 0x6, 0x7 },
+        .{ 0x8, 0x9, 0xC, 0xD },
+        .{ 0xA, 0xB, 0xE, 0xF },
+    };
+
+    const morton_index_map_3 = [8][8]u6{
+        .{ 0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15 },
+        .{ 0x02, 0x03, 0x06, 0x07, 0x12, 0x13, 0x16, 0x17 },
+        .{ 0x08, 0x09, 0x0C, 0x0D, 0x18, 0x19, 0x1C, 0x1D },
+        .{ 0x0A, 0x0B, 0x0E, 0x0F, 0x1A, 0x1B, 0x1E, 0x1F },
+        .{ 0x20, 0x21, 0x24, 0x25, 0x30, 0x31, 0x34, 0x35 },
+        .{ 0x22, 0x23, 0x26, 0x27, 0x32, 0x33, 0x36, 0x37 },
+        .{ 0x28, 0x29, 0x2C, 0x2D, 0x38, 0x39, 0x3C, 0x3D },
+        .{ 0x2A, 0x2B, 0x2E, 0x2F, 0x3A, 0x3B, 0x3E, 0x3F },
+    };
+
+    const morton_index_map_4 = [16][16]u8{
+        .{ 0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15, 0x40, 0x41, 0x44, 0x45, 0x50, 0x51, 0x54, 0x55 },
+        .{ 0x02, 0x03, 0x06, 0x07, 0x12, 0x13, 0x16, 0x17, 0x42, 0x43, 0x46, 0x47, 0x52, 0x53, 0x56, 0x57 },
+        .{ 0x08, 0x09, 0x0C, 0x0D, 0x18, 0x19, 0x1C, 0x1D, 0x48, 0x49, 0x4C, 0x4D, 0x58, 0x59, 0x5C, 0x5D },
+        .{ 0x0A, 0x0B, 0x0E, 0x0F, 0x1A, 0x1B, 0x1E, 0x1F, 0x4A, 0x4B, 0x4E, 0x4F, 0x5A, 0x5B, 0x5E, 0x5F },
+        .{ 0x20, 0x21, 0x24, 0x25, 0x30, 0x31, 0x34, 0x35, 0x60, 0x61, 0x64, 0x65, 0x70, 0x71, 0x74, 0x75 },
+        .{ 0x22, 0x23, 0x26, 0x27, 0x32, 0x33, 0x36, 0x37, 0x62, 0x63, 0x66, 0x67, 0x72, 0x73, 0x76, 0x77 },
+        .{ 0x28, 0x29, 0x2C, 0x2D, 0x38, 0x39, 0x3C, 0x3D, 0x68, 0x69, 0x6C, 0x6D, 0x78, 0x79, 0x7C, 0x7D },
+        .{ 0x2A, 0x2B, 0x2E, 0x2F, 0x3A, 0x3B, 0x3E, 0x3F, 0x6A, 0x6B, 0x6E, 0x6F, 0x7A, 0x7B, 0x7E, 0x7F },
+        .{ 0x80, 0x81, 0x84, 0x85, 0x90, 0x91, 0x94, 0x95, 0xC0, 0xC1, 0xC4, 0xC5, 0xD0, 0xD1, 0xD4, 0xD5 },
+        .{ 0x82, 0x83, 0x86, 0x87, 0x92, 0x93, 0x96, 0x97, 0xC2, 0xC3, 0xC6, 0xC7, 0xD2, 0xD3, 0xD6, 0xD7 },
+        .{ 0x88, 0x89, 0x8C, 0x8D, 0x98, 0x99, 0x9C, 0x9D, 0xC8, 0xC9, 0xCC, 0xCD, 0xD8, 0xD9, 0xDC, 0xDD },
+        .{ 0x8A, 0x8B, 0x8E, 0x8F, 0x9A, 0x9B, 0x9E, 0x9F, 0xCA, 0xCB, 0xCE, 0xCF, 0xDA, 0xDB, 0xDE, 0xDF },
+        .{ 0xA0, 0xA1, 0xA4, 0xA5, 0xB0, 0xB1, 0xB4, 0xB5, 0xE0, 0xE1, 0xE4, 0xE5, 0xF0, 0xF1, 0xF4, 0xF5 },
+        .{ 0xA2, 0xA3, 0xA6, 0xA7, 0xB2, 0xB3, 0xB6, 0xB7, 0xE2, 0xE3, 0xE6, 0xE7, 0xF2, 0xF3, 0xF6, 0xF7 },
+        .{ 0xA8, 0xA9, 0xAC, 0xAD, 0xB8, 0xB9, 0xBC, 0xBD, 0xE8, 0xE9, 0xEC, 0xED, 0xF8, 0xF9, 0xFC, 0xFD },
+        .{ 0xAA, 0xAB, 0xAE, 0xAF, 0xBA, 0xBB, 0xBE, 0xBF, 0xEA, 0xEB, 0xEE, 0xEF, 0xFA, 0xFB, 0xFE, 0xFF },
+    };
+
+    const spring_index_map_1 = [4][4]u4{
+        .{ 0x0, 0x1, 0x2, 0x3 },
+        .{ 0x4, 0x5, 0x6, 0x7 },
+        .{ 0x8, 0x9, 0xA, 0xB },
+        .{ 0xC, 0xD, 0xE, 0xF },
+    };
+
+    const spring_index_map_2 = [16][16]u8{
+        .{ 0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33 },
+        .{ 0x04, 0x05, 0x06, 0x07, 0x14, 0x15, 0x16, 0x17, 0x24, 0x25, 0x26, 0x27, 0x34, 0x35, 0x36, 0x37 },
+        .{ 0x08, 0x09, 0x0A, 0x0B, 0x18, 0x19, 0x1A, 0x1B, 0x28, 0x29, 0x2A, 0x2B, 0x38, 0x39, 0x3A, 0x3B },
+        .{ 0x0C, 0x0D, 0x0E, 0x0F, 0x1C, 0x1D, 0x1E, 0x1F, 0x2C, 0x2D, 0x2E, 0x2F, 0x3C, 0x3D, 0x3E, 0x3F },
+        .{ 0x40, 0x41, 0x42, 0x43, 0x50, 0x51, 0x52, 0x53, 0x60, 0x61, 0x62, 0x63, 0x70, 0x71, 0x72, 0x73 },
+        .{ 0x44, 0x45, 0x46, 0x47, 0x54, 0x55, 0x56, 0x57, 0x64, 0x65, 0x66, 0x67, 0x74, 0x75, 0x76, 0x77 },
+        .{ 0x48, 0x49, 0x4A, 0x4B, 0x58, 0x59, 0x5A, 0x5B, 0x68, 0x69, 0x6A, 0x6B, 0x78, 0x79, 0x7A, 0x7B },
+        .{ 0x4C, 0x4D, 0x4E, 0x4F, 0x5C, 0x5D, 0x5E, 0x5F, 0x6C, 0x6D, 0x6E, 0x6F, 0x7C, 0x7D, 0x7E, 0x7F },
+        .{ 0x80, 0x81, 0x82, 0x83, 0x90, 0x91, 0x92, 0x93, 0xA0, 0xA1, 0xA2, 0xA3, 0xB0, 0xB1, 0xB2, 0xB3 },
+        .{ 0x84, 0x85, 0x86, 0x87, 0x94, 0x95, 0x96, 0x97, 0xA4, 0xA5, 0xA6, 0xA7, 0xB4, 0xB5, 0xB6, 0xB7 },
+        .{ 0x88, 0x89, 0x8A, 0x8B, 0x98, 0x99, 0x9A, 0x9B, 0xA8, 0xA9, 0xAA, 0xAB, 0xB8, 0xB9, 0xBA, 0xBB },
+        .{ 0x8C, 0x8D, 0x8E, 0x8F, 0x9C, 0x9D, 0x9E, 0x9F, 0xAC, 0xAD, 0xAE, 0xAF, 0xBC, 0xBD, 0xBE, 0xBF },
+        .{ 0xC0, 0xC1, 0xC2, 0xC3, 0xD0, 0xD1, 0xD2, 0xD3, 0xE0, 0xE1, 0xE2, 0xE3, 0xF0, 0xF1, 0xF2, 0xF3 },
+        .{ 0xC4, 0xC5, 0xC6, 0xC7, 0xD4, 0xD5, 0xD6, 0xD7, 0xE4, 0xE5, 0xE6, 0xE7, 0xF4, 0xF5, 0xF6, 0xF7 },
+        .{ 0xC8, 0xC9, 0xCA, 0xCB, 0xD8, 0xD9, 0xDA, 0xDB, 0xE8, 0xE9, 0xEA, 0xEB, 0xF8, 0xF9, 0xFA, 0xFB },
+        .{ 0xCC, 0xCD, 0xCE, 0xCF, 0xDC, 0xDD, 0xDE, 0xDF, 0xEC, 0xED, 0xEE, 0xEF, 0xFC, 0xFD, 0xFE, 0xFF },
+    };
+
+    const zigzag_index_map_1 = [4][4]u4{
+        .{ 0x0, 0x1, 0x5, 0x6 },
+        .{ 0x2, 0x4, 0x7, 0xC },
+        .{ 0x3, 0x8, 0xB, 0xD },
+        .{ 0x9, 0xA, 0xE, 0xF },
+    };
+
+    const zigzag_index_map_2 = [16][16]u8{
+        .{ 0x00, 0x01, 0x05, 0x06, 0x10, 0x11, 0x15, 0x16, 0x50, 0x51, 0x55, 0x56, 0x60, 0x61, 0x65, 0x66 },
+        .{ 0x02, 0x04, 0x07, 0x0C, 0x12, 0x14, 0x17, 0x1C, 0x52, 0x54, 0x57, 0x5C, 0x62, 0x64, 0x67, 0x6C },
+        .{ 0x03, 0x08, 0x0B, 0x0D, 0x13, 0x18, 0x1B, 0x1D, 0x53, 0x58, 0x5B, 0x5D, 0x63, 0x68, 0x6B, 0x6D },
+        .{ 0x09, 0x0A, 0x0E, 0x0F, 0x19, 0x1A, 0x1E, 0x1F, 0x59, 0x5A, 0x5E, 0x5F, 0x69, 0x6A, 0x6E, 0x6F },
+        .{ 0x20, 0x21, 0x25, 0x26, 0x40, 0x41, 0x45, 0x46, 0x70, 0x71, 0x75, 0x76, 0xC0, 0xC1, 0xC5, 0xC6 },
+        .{ 0x22, 0x24, 0x27, 0x2C, 0x42, 0x44, 0x47, 0x4C, 0x72, 0x74, 0x77, 0x7C, 0xC2, 0xC4, 0xC7, 0xCC },
+        .{ 0x23, 0x28, 0x2B, 0x2D, 0x43, 0x48, 0x4B, 0x4D, 0x73, 0x78, 0x7B, 0x7D, 0xC3, 0xC8, 0xCB, 0xCD },
+        .{ 0x29, 0x2A, 0x2E, 0x2F, 0x49, 0x4A, 0x4E, 0x4F, 0x79, 0x7A, 0x7E, 0x7F, 0xC9, 0xCA, 0xCE, 0xCF },
+        .{ 0x30, 0x31, 0x35, 0x36, 0x80, 0x81, 0x85, 0x86, 0xB0, 0xB1, 0xB5, 0xB6, 0xD0, 0xD1, 0xD5, 0xD6 },
+        .{ 0x32, 0x34, 0x37, 0x3C, 0x82, 0x84, 0x87, 0x8C, 0xB2, 0xB4, 0xB7, 0xBC, 0xD2, 0xD4, 0xD7, 0xDC },
+        .{ 0x33, 0x38, 0x3B, 0x3D, 0x83, 0x88, 0x8B, 0x8D, 0xB3, 0xB8, 0xBB, 0xBD, 0xD3, 0xD8, 0xDB, 0xDD },
+        .{ 0x39, 0x3A, 0x3E, 0x3F, 0x89, 0x8A, 0x8E, 0x8F, 0xB9, 0xBA, 0xBE, 0xBF, 0xD9, 0xDA, 0xDE, 0xDF },
+        .{ 0x90, 0x91, 0x95, 0x96, 0xA0, 0xA1, 0xA5, 0xA6, 0xE0, 0xE1, 0xE5, 0xE6, 0xF0, 0xF1, 0xF5, 0xF6 },
+        .{ 0x92, 0x94, 0x97, 0x9C, 0xA2, 0xA4, 0xA7, 0xAC, 0xE2, 0xE4, 0xE7, 0xEC, 0xF2, 0xF4, 0xF7, 0xFC },
+        .{ 0x93, 0x98, 0x9B, 0x9D, 0xA3, 0xA8, 0xAB, 0xAD, 0xE3, 0xE8, 0xEB, 0xED, 0xF3, 0xF8, 0xFB, 0xFD },
+        .{ 0x99, 0x9A, 0x9E, 0x9F, 0xA9, 0xAA, 0xAE, 0xAF, 0xE9, 0xEA, 0xEE, 0xEF, 0xF9, 0xFA, 0xFE, 0xFF },
+    };
+};
+
+const morton2 = getTiledLookup(.Morton2, u2, 2);
+const morton2_fwd = morton2.forward;
+const morton2_inv = morton2.reverse;
+const morton4 = getTiledLookup(.Morton4, u4, 4);
+const morton4_fwd = morton4.forward;
+const morton4_inv = morton4.reverse;
+const morton8 = getTiledLookup(.Morton8, u6, 8);
+const morton8_fwd = morton8.forward;
+const morton8_inv = morton8.reverse;
+const morton16 = getTiledLookup(.Morton16, u8, 16);
+const morton16_fwd = morton16.forward;
+const morton16_inv = morton16.reverse;
+const morton32 = getTiledLookup(.Morton32, u10, 32);
+const morton32_fwd = morton32.forward;
+const morton32_inv = morton32.reverse;
+const morton64 = getTiledLookup(.Morton64, u12, 64);
+const morton64_fwd = morton64.forward;
+const morton64_inv = morton64.reverse;
+const morton128 = getTiledLookup(.Morton128, u14, 128);
+const morton128_fwd = morton128.forward;
+const morton128_inv = morton128.reverse;
+const morton256 = getTiledLookup(.Morton256, u16, 256);
+const morton256_fwd = morton256.forward;
+const morton256_inv = morton256.reverse;
+
+const spring4 = getTiledLookup(.Spring4, u4, 4);
+const spring4_fwd = spring4.forward;
+const spring4_inv = spring4.reverse;
+const spring16 = getTiledLookup(.Spring16, u8, 16);
+const spring16_fwd = spring16.forward;
+const spring16_inv = spring16.reverse;
+const spring64 = getTiledLookup(.Spring64, u12, 64);
+const spring64_fwd = spring64.forward;
+const spring64_inv = spring64.reverse;
+const spring256 = getTiledLookup(.Spring256, u16, 256);
+const spring256_fwd = spring256.forward;
+const spring256_inv = spring256.reverse;
+
+const zigzag4 = getTiledLookup(.Spring4, u4, 4);
+const zigzag4_fwd = zigzag4.forward;
+const zigzag4_inv = zigzag4.reverse;
+const zigzag16 = getTiledLookup(.Zigzag16, u8, 16);
+const zigzag16_fwd = zigzag16.forward;
+const zigzag16_inv = zigzag16.reverse;
+const zigzag64 = getTiledLookup(.Zigzag64, u12, 64);
+const zigzag64_fwd = zigzag64.forward;
+const zigzag64_inv = zigzag64.reverse;
+const zigzag256 = getTiledLookup(.Zigzag256, u16, 256);
+const zigzag256_fwd = zigzag256.forward;
+const zigzag256_inv = zigzag256.reverse;
+
+pub fn getIndex(comptime curve: Curve, row: u16, col: u16) Curve.index(curve) {
+    // TODO: if curve LUT is not pre-computed raise comptime error
+    // otherwise, use lookup tables here to retun index
+    return switch (curve) {
+        .Morton2 => morton2_fwd[row][col],
+        .Morton4 => morton4_fwd[row][col],
+        .Morton8 => morton8_fwd[row][col],
+        .Morton16 => morton16_fwd[row][col],
+        .Morton32 => morton32_fwd[row][col],
+        .Morton64 => morton64_fwd[row][col],
+        .Morton128 => morton128_fwd[row][col],
+        .Morton256 => morton256_fwd[row][col],
+        .Spring4 => spring4_fwd[row][col],
+        .Spring16 => spring16_fwd[row][col],
+        .Spring64 => spring64_fwd[row][col],
+        .Spring256 => spring256_fwd[row][col],
+        .Zigzag4 => zigzag4_fwd[row][col],
+        .Zigzag16 => zigzag16_fwd[row][col],
+        .Zigzag64 => zigzag64_fwd[row][col],
+        .Zigzag256 => zigzag256_fwd[row][col],
+    };
+}
+
+pub fn getCoords(comptime curve: Curve, index: Curve.index(curve)) [2]u16 {
+    // TODO: if curve LUT is not pre-computed raise comptime error
+    // otherwise, use lookup tables here to retun index
+    return switch (curve) {
+        .Morton2 => morton2_inv[index],
+        .Morton4 => morton4_inv[index],
+        .Morton8 => morton8_inv[index],
+        .Morton16 => morton16_inv[index],
+        .Morton32 => morton32_inv[index],
+        .Morton64 => morton64_inv[index],
+        .Morton128 => morton128_inv[index],
+        .Morton256 => morton256_inv[index],
+        .Spring4 => spring4_inv[index],
+        .Spring16 => spring16_inv[index],
+        .Spring64 => spring64_inv[index],
+        .Spring256 => spring256_inv[index],
+        .Zigzag4 => zigzag4_inv[index],
+        .Zigzag16 => zigzag16_inv[index],
+        .Zigzag64 => zigzag64_inv[index],
+        .Zigzag256 => zigzag256_inv[index],
+    };
+}
+
+// gets a partial index by applying a lookup table upto 8 bits long
+// Gets a partial index by applying a lookup table up to 8 bits long.
+fn getPartialIndex(
+    comptime curve: Curve,
+    comptime levels: u4,
+    comptime Index: type,
+    row: usize,
+    col: usize,
+) Index {
+    return switch (curve) {
+        .Morton2, .Morton4, .Morton8, .Morton16, .Morton32, .Morton64, .Morton128, .Morton256 => switch (levels) {
+            1 => @intCast(Curve.morton_index_map_1[row][col]),
+            2 => @intCast(Curve.morton_index_map_2[row][col]),
+            3 => @intCast(Curve.morton_index_map_3[row][col]),
+            4 => @intCast(Curve.morton_index_map_4[row][col]),
+            else => @compileError("Morton lookup only supports 1-4 levels"),
+        },
+
+        .Spring4, .Spring16, .Spring64, .Spring256 => switch (levels) {
+            1 => @intCast(Curve.spring_index_map_1[row][col]),
+            2 => @intCast(Curve.spring_index_map_2[row][col]),
+            else => @compileError("Spring lookup only supports 1-2 levels"),
+        },
+
+        .Zigzag4, .Zigzag16, .Zigzag64, .Zigzag256 => switch (levels) {
+            1 => @intCast(Curve.zigzag_index_map_1[row][col]),
+            2 => @intCast(Curve.zigzag_index_map_2[row][col]),
+            else => @compileError("Zigzag lookup only supports 1-2 levels"),
+        },
+    };
+}
+
+// TODO: the below will get huge if used for deep trees
+// come up with a way to use to separate small lookups for these at runtime
+fn getTiledLookup(
+    comptime curve: Curve,
+    comptime Index: type,
+    comptime n: usize,
+) struct { forward: [n][n]Index, reverse: [n * n][2]u16 } {
+    @setEvalBranchQuota(100_000);
+
+    const base = comptime Curve.base(curve);
+    const levels = comptime (math.log2_int(u16, n) / math.log2_int(u16, base));
+    const max_levels = if (base == 2) 4 else 2;
+    const axis_bitshift = math.log2_int(u8, base);
+    const num_chunks: usize = (@as(usize, levels) + max_levels - 1) / max_levels;
+    var forward: [n][n]Index = undefined;
+    var reverse: [n * n][2]u16 = undefined;
+    for (0..n) |row| {
+        for (0..n) |col| {
+            var index: Index = 0;
+            inline for (0..num_chunks) |chunk| {
+                const done = chunk * max_levels;
+                const chunk_lvls_usize = @min(max_levels, @as(usize, levels) - done);
+                const chunk_levels: u4 = @intCast(chunk_lvls_usize);
+                const remaining = @as(usize, levels) - done - chunk_lvls_usize;
+                const chunk_bitshift = chunk_lvls_usize * axis_bitshift;
+                const axis_shift = remaining * axis_bitshift;
+                const mask = (@as(usize, 1) << chunk_bitshift) - 1;
+                const lvl_row = (row >> @truncate(axis_shift)) & mask;
+                const lvl_col = (col >> @truncate(axis_shift)) & mask;
+                const lvl_index = getPartialIndex(
+                    curve,
+                    chunk_levels,
+                    Index,
+                    lvl_row,
+                    lvl_col,
+                );
+                const index_shift = 2 * remaining * axis_bitshift;
+                index |= lvl_index << @intCast(index_shift);
+            }
+            forward[row][col] = index;
+            reverse[index] = .{ @truncate(row), @truncate(col) };
+        }
+    }
+    return .{ .forward = forward, .reverse = reverse };
+}
+
+const testing = std.testing;
+const test_alloc = std.testing.allocator;
+var test_dir = "test-out";
+
+test "check tile to fill" {
+    const curves = [_]Curve{
+        .Morton4,
+        .Morton8,
+        .Morton16,
+        .Morton32,
+        .Morton64,
+        .Morton128,
+        .Morton256,
+
+        .Spring16,
+        .Spring64,
+        .Spring256,
+
+        .Zigzag16,
+        .Zigzag64,
+        .Zigzag256,
+    };
+    inline for (curves) |curve| {
+        const Index = comptime Curve.index(curve);
+        const n = comptime Curve.size(curve);
+        const lookups = getTiledLookup(curve, Index, n);
+        const forward = lookups.forward;
+        const reverse = lookups.reverse;
+
+        for (0..forward.len) |i| {
+            for (0..forward.len) |j| {
+                const index = forward[i][j];
+                const inv_coords = reverse[index];
+                try testing.expectEqual(i, @as(usize, inv_coords[0]));
+                try testing.expectEqual(j, @as(usize, inv_coords[1]));
+            }
+        }
+    }
+}

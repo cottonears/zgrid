@@ -126,16 +126,15 @@ fn elapsedNs(t1: std.Io.Timestamp, t2: std.Io.Timestamp) f64 {
 
 fn benchmarkIndexing(allocator: std.mem.Allocator, io: std.Io) !void {
     const IndexerTypes = [_]type{
-        index.Indexer2f(2, 1, 2, index.Curve.Morton),
-        index.Indexer2f(2, 1, 3, index.Curve.Morton),
-        index.Indexer2f(2, 1, 4, index.Curve.Morton),
-        index.Indexer2f(2, 1, 5, index.Curve.Morton),
-        index.Indexer2f(2, 1, 6, index.Curve.Morton),
-        index.Indexer2f(2, 1, 7, index.Curve.Morton),
-        index.Indexer2f(4, 1, 1, index.Curve.Morton),
-        index.Indexer2f(4, 1, 2, index.Curve.Spring),
-        index.Indexer2f(4, 1, 3, index.Curve.Zigzag),
-        index.Indexer2f(4, 1, 4, index.Curve.Zigzag),
+        index.Indexer2f(.Morton4, 1),
+        index.Indexer2f(.Morton8, 1),
+        index.Indexer2f(.Morton16, 1),
+        index.Indexer2f(.Morton32, 1),
+        index.Indexer2f(.Morton64, 1),
+        index.Indexer2f(.Morton128, 1),
+        index.Indexer2f(.Zigzag4, 1),
+        index.Indexer2f(.Zigzag16, 1),
+        index.Indexer2f(.Zigzag64, 1),
     };
     const headers: [1][]const u8 = .{" time (ns/pt) "};
     const formats: [1][]const u8 = .{" {d:>12.3} "};
@@ -283,17 +282,15 @@ fn benchmarkSquareTrees(allocator: std.mem.Allocator, io: std.Io) !void {
             .{ random_vols.getRandomBodies(V).len, V, params_str },
         );
         const RegIndexers = .{
-            index.Indexer2f(2, 1, 3, .Morton),
-            index.Indexer2f(2, 1, 4, .Morton),
-            index.Indexer2f(2, 1, 5, .Morton),
-            index.Indexer2f(2, 1, 6, .Morton),
-            index.Indexer2f(2, 1, 7, .Morton),
-            index.Indexer2f(4, 1, 1, .Morton),
-            index.Indexer2f(4, 1, 2, .Morton),
-            index.Indexer2f(4, 1, 3, .Morton),
-            index.Indexer2f(4, 1, 1, .Zigzag),
-            index.Indexer2f(4, 1, 2, .Zigzag),
-            index.Indexer2f(4, 1, 3, .Zigzag),
+            index.Indexer2f(.Morton4, 1),
+            index.Indexer2f(.Morton8, 1),
+            index.Indexer2f(.Morton16, 1),
+            index.Indexer2f(.Morton32, 1),
+            index.Indexer2f(.Morton64, 1),
+            index.Indexer2f(.Morton128, 1),
+            index.Indexer2f(.Zigzag4, 1),
+            index.Indexer2f(.Zigzag16, 1),
+            index.Indexer2f(.Zigzag64, 1),
         };
         inline for (RegIndexers) |Indexer| {
             try benchmarkTree(
@@ -313,17 +310,13 @@ fn benchmarkSquareTrees(allocator: std.mem.Allocator, io: std.Io) !void {
             .{ random_vols.getRandomBodies(V).len, V, params_str },
         );
         const CompIndexers = .{
-            index.Indexer2f(2, 2, 4, .Morton),
-            index.Indexer2f(2, 3, 3, .Morton),
-            index.Indexer2f(2, 4, 2, .Morton),
-            index.Indexer2f(2, 5, 1, .Morton),
-            index.Indexer2f(2, 6, 0, .Morton),
-            index.Indexer2f(4, 2, 1, .Morton),
-            index.Indexer2f(4, 2, 2, .Morton),
-            index.Indexer2f(4, 3, 1, .Morton),
-            index.Indexer2f(4, 3, 0, .Morton),
-            index.Indexer2f(4, 2, 1, .Zigzag),
-            index.Indexer2f(4, 3, 0, .Zigzag),
+            index.Indexer2f(.Morton64, 2),
+            index.Indexer2f(.Morton64, 3),
+            index.Indexer2f(.Morton64, 4),
+            index.Indexer2f(.Morton64, 5),
+            index.Indexer2f(.Morton64, 6),
+            index.Indexer2f(.Zigzag64, 2),
+            index.Indexer2f(.Zigzag64, 3),
         };
         inline for (CompIndexers) |Indexer| {
             try benchmarkTree(
@@ -364,7 +357,7 @@ fn benchmarkTree(
     var table = try DataTable(f64, 6, headers, formats).init(allocator, num_trials);
     defer table.deinit(allocator);
     const bodies = random_vols.getRandomBodies(TreeType.VolumeType);
-    const pair_buf = try allocator.alloc(TreeType.OverlapPair, 1024 * bodies.len);
+    const pair_buf = try allocator.alloc([2]TreeType.ClientIdType, 1024 * bodies.len);
     defer allocator.free(pair_buf);
     var entity_indexes = try allocator.alloc(TreeType.ClientIdType, bodies.len);
     defer allocator.free(entity_indexes);

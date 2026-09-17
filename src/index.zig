@@ -1,73 +1,18 @@
 const std = @import("std");
 const calc = @import("calc.zig");
+const curve = @import("curve.zig");
 const vol = @import("volume.zig");
 const math = std.math;
-const Vec2f = calc.Vec2f;
+const Curve = curve.Curve;
 const Box2f = vol.Box2f;
-
-pub const Curve = enum {
-    // TODO: add support for Hilbert curves!
-    Morton, // the standard Lebesgue / Morton Z-shaped curve produced by bit-interleaving
-    Spring, // same Z-shape as Morton for base = 2, but stretches for higher bases
-    Zigzag, // fancy
-
-    const morton2_index_map = [2][2]u4{
-        .{ 0, 1 },
-        .{ 2, 3 },
-    };
-
-    const morton4_index_map = [4][4]u4{
-        .{ 0x0, 0x1, 0x4, 0x5 },
-        .{ 0x2, 0x3, 0x6, 0x7 },
-        .{ 0x8, 0x9, 0xC, 0xD },
-        .{ 0xA, 0xB, 0xE, 0xF },
-    };
-
-    const spring4_index_map = [4][4]u4{
-        .{ 0x0, 0x1, 0x2, 0x3 },
-        .{ 0x4, 0x5, 0x6, 0x7 },
-        .{ 0x8, 0x9, 0xA, 0xB },
-        .{ 0xC, 0xD, 0xE, 0xF },
-    };
-
-    const zigzag4_index_map = [4][4]u4{
-        .{ 0x0, 0x1, 0x5, 0x6 },
-        .{ 0x2, 0x4, 0x7, 0xC },
-        .{ 0x3, 0x8, 0xB, 0xD },
-        .{ 0x9, 0xA, 0xE, 0xF },
-    };
-
-    fn getCurveIndexMap(comptime n: comptime_int, comptime curve: Curve) [n][n]u4 {
-        return switch (curve) {
-            .Morton => if (n == 2) morton2_index_map else morton4_index_map,
-            .Spring => if (n == 2) morton2_index_map else spring4_index_map,
-            .Zigzag => if (n == 4) zigzag4_index_map else {
-                @compileError("zigzag only supports base 4");
-            },
-        };
-    }
-
-    fn getInverseIndexMap(comptime n: comptime_int, comptime curve: Curve) [n * n][2]u4 {
-        const fwd_map = getCurveIndexMap(n, curve);
-        var inv_map: [n * n][2]u4 = undefined;
-        for (0..n) |i| {
-            for (0..n) |j| {
-                const index = fwd_map[i][j];
-                inv_map[index] = .{ @intCast(i), @intCast(j) };
-            }
-        }
-        return inv_map;
-    }
-};
+const Vec2f = calc.Vec2f;
 
 /// Recursively indexes a region on the 2D plane.
 /// Level 0 'compresses' several layers' worth of children to limit traversal depth.
 /// Nodes on subsequent levels each have sub_divs x sub_divs children.
 pub fn Indexer2f(
-    comptime subdivs_per_axis: u8, // cells per axis, per level; choose 2 or 4
-    comptime top_lvl_compression: u4, // levels folded into level 0; 1 = uncompressed
-    comptime regular_levels: u4, // uncompressed levels below level 0
     comptime curve_type: Curve, // type of space-filling curve used
+    comptime top_lvl_compression: u4, // levels folded into level 0; 1 = uncompressed
 ) type {
     return struct {
         cell_size: f32,
@@ -75,32 +20,30 @@ pub fn Indexer2f(
         min_pt: Vec2f,
         max_pt: Vec2f,
 
-        comptime { // check arguments are supported when compiling
-            if (!(subdivs_per_axis == 2 or subdivs_per_axis == 4)) {
-                @compileError("subdivisions_per_axis must be 2 or 4");
-            }
-            if (top_lvl_compression == 0) {
-                @compileError("compressed_top_levels must be greater than 0");
-            }
+        comptime {
+            if (top_lvl_compression == 0)
+                @compileError("top-level compression must be > 0");
+            if (top_lvl_compression > Curve.degree(curve_type))
+                @compileError("top-level compression exceeds curve degree");
         }
-
-        pub const CurveIndex = math.IntFittingRange(0, num_leaves - 1);
+        pub const CurveIndex = Curve.index(curve_type);
         pub const LevelIndex = math.IntFittingRange(0, depth - 1); // 0 = top level
-        pub const base = subdivs_per_axis;
-        pub const curve = curve_type;
         pub const top_levels = top_lvl_compression;
+        pub const base = Curve.base(curve_type);
+        pub const regular_levels = Curve.degree(curve_type) - top_levels;
         pub const depth = 1 + regular_levels;
-        pub const effective_depth = top_lvl_compression + regular_levels;
+        pub const effective_depth = Curve.degree(curve_type);
         pub const nodes_in_level = calc.getPow2nSequence(base, top_levels, effective_depth);
         pub const num_children = base * base;
         pub const num_leaves = nodes_in_level[depth - 1];
         pub const type_label = std.fmt.comptimePrint(
             "Indexer2f[{d} x ({d} + {d}), {s}]",
-            .{ base, top_levels, regular_levels, @tagName(curve) },
+            .{ base, top_levels, regular_levels, @tagName(curve_type) },
         );
+        const grid_size = Curve.size(curve_type);
         const lvl_bitshift = math.log2(num_children);
         const axis_bitshift = math.log2(base);
-        const coord_max: u16 = @intCast(math.sqrt(num_leaves) - 1);
+        const coord_max: u16 = @intCast(grid_size - 1);
         const coord_max_vec2f: Vec2f = @splat(calc.asf32(coord_max));
         const level_scales = blk: {
             var scales: [depth]f32 = undefined;
@@ -109,10 +52,7 @@ pub fn Indexer2f(
             }
             break :blk scales;
         };
-        const index_map = Curve.getCurveIndexMap(base, curve_type);
-        const grid_coord_map = Curve.getInverseIndexMap(base, curve_type);
         const GridIndex = u16; // NOTE: any smaller is slower (stored as register temporary).
-        pub const use_morton_bit_index = curve_type == .Morton and effective_depth >= 4;
         const index_batch_len = 8;
         const GridCoords = struct { row: GridIndex, col: GridIndex };
         const Self = @This();
@@ -140,45 +80,8 @@ pub fn Indexer2f(
         /// Gets the row + column number for the provided index.
         /// Map from curve index -> grid coords.
         fn getGridCoordsForIndex(leaf_index: CurveIndex) GridCoords {
-            if (use_morton_bit_index) {
-                const xy = calc.getDeinterleaved(leaf_index);
-                return .{ .row = xy[1], .col = xy[0] };
-            } else {
-                // TODO: implement a comptime fn that expands small lookup tables by tiling.
-                // Don't expand too large (want the LUT to comfortably fit in L1).
-                // This might improve performance by limiting recursion.
-                var row: GridIndex = 0;
-                var col: GridIndex = 0;
-                inline for (0..effective_depth) |i| {
-                    const lvl_diff = effective_depth - i - 1;
-                    const index_i = (leaf_index >> lvl_diff * lvl_bitshift) & (num_children - 1);
-                    const grid_coords = grid_coord_map[index_i];
-                    row = (row << axis_bitshift) + @as(GridIndex, @truncate(grid_coords[0]));
-                    col = (col << axis_bitshift) + @as(GridIndex, @truncate(grid_coords[1]));
-                }
-                return .{ .row = row, .col = col };
-            }
-        }
-
-        /// Gets the curve index for the provided point in the leaf-level grid.
-        /// Map from grid coords -> curve index.
-        fn getIndexForGridCoords(comptime digits: u8, c: GridCoords) CurveIndex {
-            if (use_morton_bit_index) {
-                return @intCast(calc.getInterleaved(.{ c.col, c.row }));
-            } else {
-                // TODO: implement a comptime fn that expands small lookup tables by tiling.
-                // Don't expand too large (want the LUT to comfortably fit in L1).
-                // This might improve performance by limiting recursion.
-                var index: CurveIndex = 0;
-                inline for (0..digits) |i| {
-                    const lvl_diff = digits - i - 1;
-                    const lvl_row = (c.row >> axis_bitshift * lvl_diff) & (base - 1);
-                    const lvl_col = (c.col >> axis_bitshift * lvl_diff) & (base - 1);
-                    const index_i: CurveIndex = @intCast(index_map[lvl_row][lvl_col]);
-                    index = (index << lvl_bitshift) + index_i;
-                }
-                return index;
-            }
+            const coords = curve.getCoords(curve_type, leaf_index);
+            return .{ .row = coords[0], .col = coords[1] };
         }
 
         /// Gets the bitshift required to move a leaf index up to the identified level.
@@ -193,8 +96,7 @@ pub fn Indexer2f(
             const max_pt = @max(corner_1, corner_2);
             const size = @max(max_pt[0] - min_pt[0], max_pt[1] - min_pt[1]);
             if (size <= 0.0) return error.InvalidSize;
-            var lvl_size = size;
-            for (0..effective_depth) |_| lvl_size /= base;
+            const lvl_size = size / @as(f32, @floatFromInt(grid_size));
             return Self{
                 .cell_size = lvl_size,
                 .inv_cell_size = 1.0 / lvl_size,
@@ -206,25 +108,29 @@ pub fn Indexer2f(
         /// Gets the index of the leaf node that the query point lies within.
         /// Map from R^2 -> grid coords -> index space
         pub fn getLeafIndexForPoint(self: *const Self, point: Vec2f) CurveIndex {
-            const grid_coord = self.getGridCoordsForPoint(point);
-            return getIndexForGridCoords(effective_depth, grid_coord);
+            const grid_coords = self.getGridCoordsForPoint(point);
+            return curve.getIndex(curve_type, grid_coords.row, grid_coords.col);
         }
 
-        /// Gets the indexes of top-level cells that lie within the box b.
+        /// Gets the position indexes of top-level cells that lie within the box b.
         pub fn getTopLevelIndexesForBox(
             self: *const Self,
             res_list: *std.ArrayList(CurveIndex),
             b: Box2f,
             start_leaf: CurveIndex,
         ) void {
+            // TODO: revisit this, I am sure there's a better way that doesn't need indexing
+            const leaf_coord_shift = axis_bitshift * regular_levels; // to account for compression
             const lo = self.getTopLevelCoordsForPoint(b.min);
             const hi = self.getTopLevelCoordsForPoint(b.max);
             const start_0 = getLeafPredecessor(start_leaf, 0);
             for (lo.row..hi.row + 1) |row| {
                 for (lo.col..hi.col + 1) |col| {
-                    const coords: GridCoords = .{ .row = @intCast(row), .col = @intCast(col) };
-                    const index = getIndexForGridCoords(top_levels, coords);
-                    if (index >= start_0) res_list.appendAssumeCapacity(index);
+                    const leaf_row: u16 = @truncate(row << leaf_coord_shift);
+                    const leaf_col: u16 = @truncate(col << leaf_coord_shift);
+                    const leaf_index = curve.getIndex(curve_type, leaf_row, leaf_col);
+                    const top_index = getLeafPredecessor(leaf_index, 0);
+                    if (top_index >= start_0) res_list.appendAssumeCapacity(top_index);
                 }
             }
         }
@@ -263,13 +169,11 @@ pub fn Indexer2f(
             const add_right = right - grid_coords.col == n;
             for (top..bot + 1) |i| {
                 if (add_left) {
-                    const l = GridCoords{ .row = @intCast(i), .col = left };
-                    buff[blen] = getIndexForGridCoords(effective_depth, l);
+                    buff[blen] = curve.getIndex(curve_type, @truncate(i), left);
                     blen += 1;
                 }
                 if (add_right) {
-                    const r = GridCoords{ .row = @intCast(i), .col = right };
-                    buff[blen] = getIndexForGridCoords(effective_depth, r);
+                    buff[blen] = curve.getIndex(curve_type, @truncate(i), right);
                     blen += 1;
                 }
             }
@@ -280,18 +184,16 @@ pub fn Indexer2f(
             const h_end = if (add_right) right else right + 1;
             for (h_start..h_end) |j| {
                 if (add_top) {
-                    const t = GridCoords{ .row = top, .col = @intCast(j) };
-                    buff[blen] = getIndexForGridCoords(effective_depth, t);
+                    buff[blen] = curve.getIndex(curve_type, top, @truncate(j));
                     blen += 1;
                 }
                 if (add_bot) {
-                    const b = GridCoords{ .row = bot, .col = @intCast(j) };
-                    buff[blen] = getIndexForGridCoords(effective_depth, b);
+                    buff[blen] = curve.getIndex(curve_type, bot, @truncate(j));
                     blen += 1;
                 }
             }
             const idx_buff = buff[0..blen];
-            std.sort.pdq(CurveIndex, idx_buff, {}, std.sort.asc(CurveIndex));
+            std.sort.pdq(CurveIndex, idx_buff, {}, std.sort.asc(CurveIndex)); // TODO: why???
             return idx_buff;
         }
 
@@ -327,27 +229,8 @@ const test_alloc = std.testing.allocator;
 const test_dist: calc.ProbDensityFunc = .{ .uniform = .{ .min = -5.0, .max = 5.0 } };
 var test_dir = "test-out";
 
-test "check coord map lookups are 1:1" {
-    const spring4_index_map = Curve.getCurveIndexMap(4, .Spring);
-    const zigzag4_index_map = Curve.getCurveIndexMap(4, .Zigzag);
-    const spring_grid_lookup = Curve.getInverseIndexMap(4, .Spring);
-    const zigzag_grid_lookup = Curve.getInverseIndexMap(4, .Zigzag);
-    for (0..4) |i| {
-        for (0..4) |j| {
-            const s = spring4_index_map[i][j];
-            const z = zigzag4_index_map[i][j];
-            const s_inv = spring_grid_lookup[s];
-            const z_inv = zigzag_grid_lookup[z];
-            try std.testing.expectEqual(s_inv[0], i);
-            try std.testing.expectEqual(s_inv[1], j);
-            try std.testing.expectEqual(z_inv[0], i);
-            try std.testing.expectEqual(z_inv[1], j);
-        }
-    }
-}
-
 test "hexa tree indexing" {
-    const Indexer = Indexer2f(4, 1, 1, Curve.Spring);
+    const Indexer = Indexer2f(Curve.Spring16, 1);
     var hex_indexer = try Indexer.init(.{ 0, 0 }, .{ 8, 8 });
     const pt_a = Vec2f{ 4.1, 2.1 };
     const index_a = hex_indexer.getLeafIndexForPoint(pt_a);
@@ -369,7 +252,7 @@ test "hexa tree indexing" {
 }
 
 test "quad tree indexing" {
-    const Indexer = Indexer2f(2, 1, 2, Curve.Morton);
+    const Indexer = Indexer2f(Curve.Morton8, 1);
     var quad_indexer = try Indexer.init(.{ 0, 0 }, .{ 8, 8 });
     const pt_a = Vec2f{ 4.1, 4.1 };
     const index_a = quad_indexer.getLeafIndexForPoint(pt_a);
@@ -395,8 +278,8 @@ test "quad tree indexing" {
 }
 
 test "compressed indexing test" {
-    const RegIndexer = Indexer2f(4, 1, 2, Curve.Zigzag);
-    const CompIndexer = Indexer2f(4, 2, 1, Curve.Zigzag);
+    const RegIndexer = Indexer2f(Curve.Zigzag64, 1);
+    const CompIndexer = Indexer2f(Curve.Zigzag64, 2);
     const CurveIndex = RegIndexer.CurveIndex;
     // same effective depth and curve -> same total leaves in each tree
     try testing.expectEqual(RegIndexer.num_leaves, CompIndexer.num_leaves);
@@ -439,9 +322,9 @@ test "compressed indexing test" {
 
 test "inter-leaf distances are bounded" {
     const Indexers = .{
-        Indexer2f(4, 1, 2, Curve.Morton),
-        Indexer2f(4, 1, 1, Curve.Spring),
-        Indexer2f(4, 1, 1, Curve.Zigzag),
+        Indexer2f(Curve.Morton16, 1),
+        Indexer2f(Curve.Spring16, 1),
+        Indexer2f(Curve.Zigzag16, 1),
     };
     const seed = calc.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
@@ -484,9 +367,9 @@ test "inter-leaf distances are bounded" {
 
 test "leaf index round trip" {
     const Indexers = .{
-        Indexer2f(2, 1, 2, Curve.Morton),
-        Indexer2f(4, 1, 1, Curve.Spring),
-        Indexer2f(4, 1, 2, Curve.Zigzag),
+        Indexer2f(Curve.Morton16, 1),
+        Indexer2f(Curve.Spring16, 1),
+        Indexer2f(Curve.Zigzag16, 1),
     };
     const seed = calc.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
@@ -520,7 +403,7 @@ test "check get leaf cell neighbours in centre" {
     errdefer calc.printErrorMessageForRandomSeed(seed);
     var random_pts: [100]Vec2f = undefined;
     calc.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &random_pts);
-    const Indexer = Indexer2f(4, 1, 1, Curve.Zigzag);
+    const Indexer = Indexer2f(Curve.Zigzag16, 1);
     const indexer = try Indexer.init(.{ -10, -10 }, .{ 10, 10 });
     // check size and values match what is expected
     for (random_pts) |p| {
@@ -544,7 +427,7 @@ test "check get leaf cell neighbours in centre" {
 }
 
 test "check get leaf cell neighbours near edge" {
-    const Indexer = Indexer2f(4, 1, 2, Curve.Zigzag);
+    const Indexer = Indexer2f(Curve.Zigzag64, 1);
     const p_idx: Indexer.CurveIndex = 0;
     const p_gc = Indexer.getGridCoordsForIndex(p_idx);
     var idx_seen = [_]bool{false} ** Indexer.num_leaves;
@@ -568,9 +451,9 @@ test "check get leaf cell neighbours near edge" {
 
 test "draw indexer curves" {
     const Indexers = .{
-        Indexer2f(2, 2, 4, Curve.Morton),
-        Indexer2f(4, 1, 2, Curve.Spring),
-        Indexer2f(4, 1, 2, Curve.Zigzag),
+        Indexer2f(Curve.Morton64, 2),
+        Indexer2f(Curve.Spring64, 1),
+        Indexer2f(Curve.Zigzag64, 1),
     };
     const bg_style: svg.ShapeStyle = .{ .fill_active = true, .fill_hsl = .{ 0, 0, 95 } };
     const line_style: svg.ShapeStyle = .{ .stroke_width = 2, .stroke_hsl = .{ 90, 60, 40 } };

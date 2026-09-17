@@ -45,7 +45,6 @@ pub fn SquareTree(
         };
         pub const ClientIdType = ClientId;
         pub const CurveIndex = Indexer.CurveIndex;
-        pub const OverlapPair = [2]ClientIdType;
         pub const Neighbour = struct { id: ClientId, dist: f32 };
         pub const VolumeType = Volume;
         pub const compressed = Indexer.top_levels > 1;
@@ -62,8 +61,8 @@ pub fn SquareTree(
             .min_parts_per_worker = 1,
             .max_parts_per_worker = 32,
         };
-        const query_worker_buf_bytes = 8 * 1024; // stack-allocated staging bytes for each worker
-        const query_worker_buf_pair_len = query_worker_buf_bytes / @sizeOf(OverlapPair);
+        const query_worker_buf_bytes = 16 * 1024; // stack-allocated bytes for each worker
+        const query_worker_buf_pair_len = query_worker_buf_bytes / @sizeOf(ClientId);
         const update_bv_min_part_nodes = 64; // fewest nodes worth splitting across workers
         const update_bv_parts_per_worker = 4;
         const bv_top_lvl: u4 = blk: { // highest level where update computes bvs in parallel
@@ -150,18 +149,11 @@ pub fn SquareTree(
         ) Error!void {
             if (self.num_volumes + vols.len > self.staged_data.len) return error.TreeCapacityExceeded;
             if (vols.len != client_ids.len) return error.InputLengthMismatch;
-            var max_half_extent = self.max_half_extent;
             for (vols, client_ids) |v, c| {
-                if (compressed) {
-                    const bb = v.getBoundingBox();
-                    const he = calc.scaledVec(0.5, bb.max - bb.min);
-                    max_half_extent = @max(max_half_extent, he);
-                }
                 self.staged_data[self.num_volumes] = v;
                 self.staged_ids[self.num_volumes] = c;
                 self.num_volumes += 1;
             }
-            self.max_half_extent = max_half_extent;
             self.bounds_valid = false;
         }
 
@@ -276,14 +268,14 @@ pub fn SquareTree(
         /// Single-threaded (no io dependency) but not thread-safe (writes to scratch bufs).
         pub fn findExtOverlaps(
             self: *Self,
-            overlap_buf: []OverlapPair,
+            overlap_buf: [][2]ClientId,
             query_ids: []const ClientId,
             query_vols: anytype,
-        ) Error![]OverlapPair {
+        ) Error![][2]ClientId {
             if (query_ids.len != query_vols.len) return error.InputLengthMismatch;
             if (!self.bounds_valid) return error.BoundsNotUpdated;
             var range_iter = para.AtomicRangeIter.init(0, query_ids.len, 1);
-            var shared_buf = para.SharedBuffer(OverlapPair).init(overlap_buf);
+            var shared_buf = para.SharedBuffer([2]ClientId).init(overlap_buf);
             self.findExtOverlapsWorker(
                 self.scratch_a[0..num_leaves],
                 self.scratch_b[0..num_leaves],
@@ -301,10 +293,10 @@ pub fn SquareTree(
         pub fn findExtOverlapsParallel(
             self: *Self,
             io: Io,
-            overlap_buf: []OverlapPair,
+            overlap_buf: [][2]ClientId,
             query_ids: []const ClientId,
             query_vols: anytype,
-        ) ![]OverlapPair {
+        ) ![][2]ClientId {
             if (query_ids.len != query_vols.len) return error.InputLengthMismatch;
             if (!self.bounds_valid) return error.BoundsNotUpdated;
             if (query_ids.len == 0) return overlap_buf[0..0];
@@ -315,7 +307,7 @@ pub fn SquareTree(
                     scratch_a: []CurveIndex,
                     scratch_b: []CurveIndex,
                     range_iter: *para.AtomicRangeIter,
-                    shared_buf: *para.SharedBuffer(OverlapPair),
+                    shared_buf: *para.SharedBuffer([2]ClientId),
                     ids: []const ClientId,
                     vols: @TypeOf(query_vols),
                 ) void {
@@ -325,7 +317,7 @@ pub fn SquareTree(
             const num_parts = query_part_sizer.getParts(query_ids.len, self.max_async_workers);
             const num_workers = query_part_sizer.getWorkers(num_parts, self.max_async_workers);
             var range_iter = para.AtomicRangeIter.init(0, query_ids.len, num_parts);
-            var shared_buf = para.SharedBuffer(OverlapPair).init(overlap_buf);
+            var shared_buf = para.SharedBuffer([2]ClientId).init(overlap_buf);
             var group: Io.Group = .init;
             errdefer group.cancel(io);
             for (0..num_workers) |i| {
@@ -348,10 +340,10 @@ pub fn SquareTree(
         /// Single-threaded (no io dependency) but not thread-safe (writes to scratch bufs).
         pub fn findExtOverlapsSingle(
             self: *Self,
-            overlap_buf: []OverlapPair,
+            overlap_buf: [][2]ClientId,
             query_id: ClientId,
             query_vol: anytype,
-        ) Error![]OverlapPair {
+        ) Error![][2]ClientId {
             const query_ids = [_]ClientId{query_id};
             const query_vols = [_]@TypeOf(query_vol){query_vol};
             return self.findExtOverlaps(overlap_buf, &query_ids, &query_vols);
@@ -362,27 +354,27 @@ pub fn SquareTree(
             scratch_a: []CurveIndex,
             scratch_b: []CurveIndex,
             range_iter: *para.AtomicRangeIter,
-            shared_buf: *para.SharedBuffer(OverlapPair),
+            shared_buf: *para.SharedBuffer([2]ClientId),
             query_ids: []const ClientId,
             query_vols: anytype,
         ) void {
-            var pair_buf: [query_worker_buf_pair_len]OverlapPair = undefined;
-            var res_list = std.ArrayList(OverlapPair).initBuffer(&pair_buf);
+            var pair_buf: [query_worker_buf_pair_len][2]ClientId = undefined;
+            var work_list = std.ArrayList([2]ClientId).initBuffer(&pair_buf);
             while (range_iter.next()) |range| {
                 for (query_ids[range.start..range.end], query_vols[range.start..range.end]) |id, v| {
-                    self.findOverlapsBfs(shared_buf, &res_list, scratch_a, scratch_b, id, v, 0, 0);
+                    self.findOverlapsBfs(shared_buf, &work_list, scratch_a, scratch_b, id, v, 0, 0);
                 }
             }
-            shared_buf.appendSlice(res_list.items); // publish whatever is left staged
+            shared_buf.appendSlice(work_list.items); // publish whatever is left staged
         }
 
         /// Returns ids for every pair of stored volumes that overlap with each other.
         /// Requires `updateBounds` to have been called since the last `addVolume`.
         /// Single-threaded (no io dependency) but not thread-safe (writes to scratch bufs).
-        pub fn findSelfOverlaps(self: *Self, overlap_buf: []OverlapPair) Error![]OverlapPair {
+        pub fn findSelfOverlaps(self: *Self, overlap_buf: [][2]ClientId) Error![][2]ClientId {
             if (!self.bounds_valid) return error.BoundsNotUpdated;
             var range_iter = para.AtomicRangeIter.init(0, self.num_volumes, 1);
-            var shared_buf = para.SharedBuffer(OverlapPair).init(overlap_buf);
+            var shared_buf = para.SharedBuffer([2]ClientId).init(overlap_buf);
             self.findSelfOverlapWorker(
                 self.scratch_a[0..num_leaves],
                 self.scratch_b[0..num_leaves],
@@ -398,15 +390,15 @@ pub fn SquareTree(
         pub fn findSelfOverlapsParallel(
             self: *Self,
             io: Io,
-            overlap_buf: []OverlapPair,
-        ) ![]OverlapPair {
+            overlap_buf: [][2]ClientId,
+        ) ![][2]ClientId {
             if (!self.bounds_valid) return error.BoundsNotUpdated;
             const num_volumes = self.num_volumes;
             if (num_volumes == 0) return overlap_buf[0..0];
             const num_parts = query_part_sizer.getParts(num_volumes, self.max_async_workers);
             const num_workers = query_part_sizer.getWorkers(num_parts, self.max_async_workers);
             var range_iter = para.AtomicRangeIter.init(0, num_volumes, num_parts);
-            var shared_buf = para.SharedBuffer(OverlapPair).init(overlap_buf);
+            var shared_buf = para.SharedBuffer([2]ClientId).init(overlap_buf);
             var group: Io.Group = .init;
             errdefer group.cancel(io);
             for (0..num_workers) |i| {
@@ -427,10 +419,11 @@ pub fn SquareTree(
             scratch_a: []CurveIndex,
             scratch_b: []CurveIndex,
             range_iter: *para.AtomicRangeIter,
-            shared_buf: *para.SharedBuffer(OverlapPair),
+            shared_buf: *para.SharedBuffer([2]ClientId),
         ) void {
-            var pair_buf: [query_worker_buf_pair_len]OverlapPair = undefined;
-            var res_list = std.ArrayList(OverlapPair).initBuffer(&pair_buf);
+            // results copied to a small buffer on the stack and flushed to the shared buffer as needed
+            var work_buf: [query_worker_buf_pair_len][2]ClientId = undefined;
+            var work_list = std.ArrayList([2]ClientId).initBuffer(&work_buf);
             while (range_iter.next()) |range| {
                 if (range.start >= range.end) continue;
                 var leaf_cursor = self.flatIndexToLeafIndex(range.start);
@@ -438,7 +431,7 @@ pub fn SquareTree(
                     const vol_index = self.nextVolIndex(&leaf_cursor, i);
                     self.findOverlapsBfs(
                         shared_buf,
-                        &res_list,
+                        &work_list,
                         scratch_a,
                         scratch_b,
                         self.leaf_ids[i],
@@ -448,7 +441,7 @@ pub fn SquareTree(
                     );
                 }
             }
-            shared_buf.appendSlice(res_list.items); // publish whatever is left staged
+            shared_buf.appendSlice(work_list.items);
         }
 
         /// Finds stored volumes nearest to each query point, nearest-first.
@@ -575,7 +568,7 @@ pub fn SquareTree(
             // find every client id that participates in an overlap
             const volumes = self.leaf_data[0..self.num_volumes];
             const ids = self.leaf_ids[0..self.num_volumes];
-            const overlap_buff = try allocator.alloc(OverlapPair, 16 * volumes.len);
+            const overlap_buff = try allocator.alloc([2]ClientId, 16 * volumes.len);
             defer allocator.free(overlap_buff);
             const pairs = try self.findSelfOverlaps(overlap_buff);
             var overlapping = std.AutoHashMap(ClientId, void).init(allocator);
@@ -636,13 +629,20 @@ pub fn SquareTree(
             // see https://www.interviewcake.com/concept/python/radix-sort
             const num_vols = self.num_volumes;
             if (num_vols > self.leaf_data.len) return Error.TreeCapacityExceeded;
+            var max_half_extent: Vec2f = @splat(0);
             for (self.staged_data[0..num_vols], 0..) |v, i| {
                 const leaf_index = self.indexer.getLeafIndexForPoint(v.getCentre());
                 self.staged_indexes[i] = leaf_index;
                 const data_index = self.leaf_counts[leaf_index];
                 if (data_index == math.maxInt(DataIndex)) return Error.LeafCapacityExceeded;
                 self.leaf_counts[leaf_index] = data_index + 1;
+                if (compressed) {
+                    const bb = v.getBoundingBox();
+                    const he = calc.scaledVec(0.5, bb.max - bb.min);
+                    max_half_extent = @max(max_half_extent, he);
+                }
             }
+            self.max_half_extent = max_half_extent;
             self.leaf_starts[0] = 0;
             var offset: StartIndex = 0;
             for (self.leaf_counts, 1..) |count, i| {
@@ -732,8 +732,8 @@ pub fn SquareTree(
         /// Performs a BFS for stored volumes that overlap with the provided query volume.
         fn findOverlapsBfs(
             self: *const Self,
-            shared_buf: *para.SharedBuffer(OverlapPair),
-            res_list: *std.ArrayList(OverlapPair),
+            shared_buf: *para.SharedBuffer([2]ClientId),
+            work_list: *std.ArrayList([2]ClientId),
             slice_a: []CurveIndex,
             slice_b: []CurveIndex,
             query_id: ClientId,
@@ -780,11 +780,11 @@ pub fn SquareTree(
                 const start = if (i == start_leaf) start_vol_index else 0;
                 for (items[start..], ids[start..]) |stored_vol, id| {
                     if (!vol.checkVolumesOverlap(query_vol, stored_vol)) continue;
-                    if (res_list.items.len == query_worker_buf_pair_len) { // publish a full batch
-                        shared_buf.appendSlice(res_list.items);
-                        res_list.clearRetainingCapacity();
+                    if (work_list.items.len == query_worker_buf_pair_len) { // publish a full batch
+                        shared_buf.appendSlice(work_list.items);
+                        work_list.clearRetainingCapacity();
                     }
-                    res_list.appendAssumeCapacity(.{ query_id, id });
+                    work_list.appendAssumeCapacity(.{ query_id, id });
                 }
             }
         }
@@ -797,16 +797,16 @@ const test_capacity = 1000;
 
 test "square tree init + deinit" {
     // check for memory leaks
-    const Tree2x8 = SquareTree(index.Indexer2f(2, 1, 7, .Morton), Ball2f, u32);
-    var qt = try Tree2x8.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0);
+    const Tree2x2 = SquareTree(index.Indexer2f(.Morton4, 1), Ball2f, u16);
+    var qt = try Tree2x2.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0);
     defer qt.deinit(test_alloc);
-    const Tree4x4 = SquareTree(index.Indexer2f(4, 1, 5, .Zigzag), Ball2f, u32);
-    var ht = try Tree4x4.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0);
+    const Tree4x2 = SquareTree(index.Indexer2f(.Zigzag16, 1), Ball2f, u16);
+    var ht = try Tree4x2.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0);
     defer ht.deinit(test_alloc);
 }
 
 test "hex tree overlap ball" {
-    const HexTree2 = SquareTree(index.Indexer2f(4, 1, 1, .Zigzag), Ball2f, u32);
+    const HexTree2 = SquareTree(index.Indexer2f(.Zigzag16, 1), Ball2f, u16);
     var tree = try HexTree2.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 8);
     defer tree.deinit(test_alloc);
     var balls = [3]Ball2f{
@@ -814,11 +814,11 @@ test "hex tree overlap ball" {
         .{ .centre = .{ 0.2, 0.5 }, .radius = 0.2 },
         .{ .centre = .{ 0.2, 0.7 }, .radius = 0.1 },
     };
-    const indexes = calc.getRange(u32, balls.len);
+    const indexes = calc.getRange(u16, balls.len);
     try tree.addVolumes(balls[0..], &indexes);
     try tree.updateBoundsParallel(testing.io);
-    var id_buff: [16][2]u32 = undefined;
-    const query_ids = [_]u32{ 4, 5, 6 };
+    var pairs_buff: [16][2]u16 = undefined;
+    const query_ids = [_]u16{ 4, 5, 6 };
     const query_regions = [_]Ball2f{
         .{ .centre = .{ 0.9, 0.5 }, .radius = 0.1 },
         .{ .centre = .{ -3.5, -3.5 }, .radius = 1.0 },
@@ -827,22 +827,22 @@ test "hex tree overlap ball" {
     // query balls 4 and 5 overlap nothing; 6 overlaps all 3 stored balls
     const ext_overlaps = try tree.findExtOverlapsParallel(
         testing.io,
-        &id_buff,
+        &pairs_buff,
         &query_ids,
         &query_regions,
     );
-    const expected_ext = [_]HexTree2.OverlapPair{ .{ 0, 6 }, .{ 1, 6 }, .{ 2, 6 } };
-    calc.sortPairsLessThan(u32, ext_overlaps);
-    try testing.expectEqualSlices(HexTree2.OverlapPair, &expected_ext, ext_overlaps);
+    const expected_ext = [_][2]u16{ .{ 0, 6 }, .{ 1, 6 }, .{ 2, 6 } };
+    calc.sortPairsLessThan(u16, ext_overlaps);
+    try testing.expectEqualSlices([2]u16, &expected_ext, ext_overlaps);
     // a overlaps b, and b overlaps c, but a does not overlap c.
-    const self_overlaps = try tree.findSelfOverlapsParallel(testing.io, &id_buff);
-    calc.sortPairsLessThan(u32, self_overlaps);
-    const expected_self = [_]HexTree2.OverlapPair{ .{ 0, 1 }, .{ 1, 2 } };
-    try testing.expectEqualSlices(HexTree2.OverlapPair, &expected_self, self_overlaps);
+    const self_overlaps = try tree.findSelfOverlapsParallel(testing.io, &pairs_buff);
+    calc.sortPairsLessThan(u16, self_overlaps);
+    const expected_self = [_][2]u16{ .{ 0, 1 }, .{ 1, 2 } };
+    try testing.expectEqualSlices([2]u16, &expected_self, self_overlaps);
 }
 
 test "hex tree overlap box" {
-    const HexTree2 = SquareTree(index.Indexer2f(4, 1, 1, .Zigzag), Box2f, u32);
+    const HexTree2 = SquareTree(index.Indexer2f(.Zigzag16, 1), Box2f, u16);
     var tree = try HexTree2.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0);
     defer tree.deinit(test_alloc);
     const boxes = [_]Box2f{
@@ -851,30 +851,30 @@ test "hex tree overlap box" {
         .{ .min = .{ 0.1, 0.6 }, .max = .{ 0.3, 0.8 } },
     };
 
-    const indexes = calc.getRange(u32, boxes.len);
+    const indexes = calc.getRange(u16, boxes.len);
     try tree.addVolumes(&boxes, &indexes);
     try tree.updateBoundsParallel(testing.io);
-    const query_ids = [_]u32{ 4, 5, 6 };
+    const query_ids = [_]u16{ 4, 5, 6 };
     const query_regions = [_]Box2f{
         .{ .min = .{ 0.8, 0.4 }, .max = .{ 1.0, 0.6 } },
         .{ .min = @splat(-4.5), .max = @splat(-2.5) },
         .{ .min = .{ 0.0, 0.3 }, .max = .{ 0.4, 0.7 } },
     };
     // query boxes 4 and 5 overlap nothing; 6 overlaps all 3 stored boxes
-    var id_buff: [16]HexTree2.OverlapPair = undefined;
+    var id_buff: [16][2]u16 = undefined;
     const ext_overlaps = try tree.findExtOverlaps(&id_buff, &query_ids, &query_regions);
-    const expected_ext = [_]HexTree2.OverlapPair{ .{ 0, 6 }, .{ 1, 6 }, .{ 2, 6 } };
-    calc.sortPairsLessThan(u32, ext_overlaps);
-    try testing.expectEqualSlices(HexTree2.OverlapPair, &expected_ext, ext_overlaps);
+    const expected_ext = [_][2]u16{ .{ 0, 6 }, .{ 1, 6 }, .{ 2, 6 } };
+    calc.sortPairsLessThan(u16, ext_overlaps);
+    try testing.expectEqualSlices([2]u16, &expected_ext, ext_overlaps);
     // a overlaps b, and b overlaps c, but a does not overlap c.
     const self_overlaps = try tree.findSelfOverlapsParallel(testing.io, &id_buff);
-    calc.sortPairsLessThan(u32, self_overlaps);
-    const expected_self = [_]HexTree2.OverlapPair{ .{ 0, 1 }, .{ 1, 2 } };
-    try testing.expectEqualSlices(HexTree2.OverlapPair, &expected_self, self_overlaps);
+    calc.sortPairsLessThan(u16, self_overlaps);
+    const expected_self = [_][2]u16{ .{ 0, 1 }, .{ 1, 2 } };
+    try testing.expectEqualSlices([2]u16, &expected_self, self_overlaps);
 }
 
 test "square tree add remove" {
-    const IndexerM2x4 = index.Indexer2f(4, 1, 1, .Morton);
+    const IndexerM2x4 = index.Indexer2f(.Morton16, 1);
     const QuadTree = SquareTree(IndexerM2x4, Ball2f, u32);
     var qt = try QuadTree.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0);
     defer qt.deinit(test_alloc);
@@ -900,7 +900,7 @@ test "square tree add remove" {
 }
 
 test "staged volumes keep their rank within a leaf" {
-    const IndexerM4x2 = index.Indexer2f(4, 1, 1, .Morton);
+    const IndexerM4x2 = index.Indexer2f(.Morton16, 1);
     const QuadTree = SquareTree(IndexerM4x2, Ball2f, u32);
     var qt = try QuadTree.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0);
     defer qt.deinit(test_alloc);
@@ -927,15 +927,12 @@ test "staged volumes keep their rank within a leaf" {
 
 test "find self overlaps matches brute force" {
     const Trees = .{
-        SquareTree(index.Indexer2f(4, 1, 2, .Spring), Ball2f, u16),
-        SquareTree(index.Indexer2f(4, 1, 1, .Zigzag), Box2f, u16),
-        SquareTree(index.Indexer2f(2, 1, 4, .Morton), OrientedBox2f, u16),
-        SquareTree(index.Indexer2f(4, 2, 1, .Spring), Ball2f, u16),
-        SquareTree(index.Indexer2f(4, 2, 1, .Zigzag), OrientedBox2f, u16),
-        SquareTree(index.Indexer2f(2, 3, 2, .Morton), Box2f, u16),
-        SquareTree(index.Indexer2f(4, 3, 0, .Morton), Ball2f, u16),
-        SquareTree(index.Indexer2f(2, 1, 5, .Morton), OrientedBox2f, u16),
-        SquareTree(index.Indexer2f(2, 6, 0, .Morton), Box2f, u16),
+        SquareTree(index.Indexer2f(.Spring16, 1), Ball2f, u16),
+        SquareTree(index.Indexer2f(.Zigzag16, 1), Box2f, u16),
+        SquareTree(index.Indexer2f(.Morton16, 1), OrientedBox2f, u16),
+        SquareTree(index.Indexer2f(.Spring64, 1), Ball2f, u16),
+        SquareTree(index.Indexer2f(.Zigzag64, 1), OrientedBox2f, u16),
+        SquareTree(index.Indexer2f(.Morton64, 1), Box2f, u16),
     };
     const num_vols = 200;
     const seed = calc.getClockBasedRngSeed(testing.io);
@@ -954,10 +951,10 @@ test "find self overlaps matches brute force" {
         const bodies = test_vols.getRandomBodies(Tree.VolumeType);
         var tree = try Tree.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, num_vols, 0);
         defer tree.deinit(test_alloc);
-        const indexes = calc.getRange(Tree.ClientIdType, num_vols);
+        const indexes = calc.getRange(u16, num_vols);
         try tree.addVolumes(bodies, &indexes);
         try tree.updateBoundsParallel(testing.io);
-        var expected: std.ArrayList(Tree.OverlapPair) = .empty;
+        var expected: std.ArrayList([2]u16) = .empty;
         defer expected.deinit(test_alloc);
         for (bodies, 0..) |a, i| {
             for (bodies[i + 1 ..], i + 1..) |b, j| {
@@ -967,24 +964,24 @@ test "find self overlaps matches brute force" {
             }
         }
         // check that the pairwise overlap results agree with those returned by the tree's method
-        const found_buff = try test_alloc.alloc(Tree.OverlapPair, num_vols * num_vols);
+        const found_buff = try test_alloc.alloc([2]u16, num_vols * num_vols);
         defer test_alloc.free(found_buff);
         const actual = try tree.findSelfOverlapsParallel(testing.io, found_buff);
-        calc.sortPairsLessThan(Tree.ClientIdType, expected.items);
-        calc.sortPairsLessThan(Tree.ClientIdType, actual);
-        try testing.expectEqualSlices(Tree.OverlapPair, expected.items, actual);
+        calc.sortPairsLessThan(u16, expected.items);
+        calc.sortPairsLessThan(u16, actual);
+        try testing.expectEqualSlices([2]u16, expected.items, actual);
     }
 }
 
 test "short overlap buffer returns a capacity error" {
-    const Tree = SquareTree(index.Indexer2f(4, 1, 1, .Zigzag), Ball2f, u32);
+    const Tree = SquareTree(index.Indexer2f(.Zigzag16, 1), Ball2f, u32);
     var tree = try Tree.init(test_alloc, .{ -1, -1 }, .{ 1, 1 }, 16, 0);
     defer tree.deinit(test_alloc);
     const balls = [_]Ball2f{.{ .centre = .{ 0, 0 }, .radius = 0.5 }} ** 16;
     const ids = calc.getRange(u32, balls.len);
     try tree.addVolumes(&balls, &ids);
     try tree.updateBounds();
-    var buf: [32]Tree.OverlapPair = undefined;
+    var buf: [32][2]u32 = undefined;
     try testing.expectError(error.BufferCapacityExceeded, tree.findSelfOverlaps(buf[0..4]));
     try testing.expectError(
         error.BufferCapacityExceeded,
@@ -997,7 +994,7 @@ test "find neighbours matches brute force" {
     const seed = calc.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
     errdefer calc.printErrorMessageForRandomSeed(seed);
-    const Tree = SquareTree(index.Indexer2f(4, 2, 1, .Zigzag), Box2f, u16);
+    const Tree = SquareTree(index.Indexer2f(.Zigzag64, 1), Box2f, u16);
     var tree = try Tree.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, num_vols, 0);
     defer tree.deinit(test_alloc);
     var test_vols = try vol.TestVolumes.initRandom(
@@ -1058,7 +1055,7 @@ test "occupancy counts are accurate" {
     const seed = calc.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
     errdefer calc.printErrorMessageForRandomSeed(seed);
-    const Indexer = index.Indexer2f(2, 1, 2, .Morton);
+    const Indexer = index.Indexer2f(.Morton64, 1);
     const Tree = SquareTree(Indexer, Box2f, u8);
     var tree = try Tree.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, num_vols, 1);
     defer tree.deinit(test_alloc);
@@ -1096,7 +1093,7 @@ test "occupancy counts are accurate" {
 }
 
 test "draw square trees svg" {
-    const IndexerM4x2 = index.Indexer2f(4, 1, 1, .Spring);
+    const IndexerM4x2 = index.Indexer2f(.Spring16, 1);
     const Trees = .{
         SquareTree(IndexerM4x2, Ball2f, u32),
         SquareTree(IndexerM4x2, Box2f, u32),
