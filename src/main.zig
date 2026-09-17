@@ -126,13 +126,11 @@ fn elapsedNs(t1: std.Io.Timestamp, t2: std.Io.Timestamp) f64 {
 
 fn benchmarkIndexing(allocator: std.mem.Allocator, io: std.Io) !void {
     const IndexerTypes = [_]type{
-        index.Indexer2f(.Morton4, 1),
         index.Indexer2f(.Morton8, 1),
         index.Indexer2f(.Morton16, 1),
         index.Indexer2f(.Morton32, 1),
         index.Indexer2f(.Morton64, 1),
         index.Indexer2f(.Morton128, 1),
-        index.Indexer2f(.Zigzag4, 1),
         index.Indexer2f(.Zigzag16, 1),
         index.Indexer2f(.Zigzag64, 1),
     };
@@ -282,13 +280,11 @@ fn benchmarkSquareTrees(allocator: std.mem.Allocator, io: std.Io) !void {
             .{ random_vols.getRandomBodies(V).len, V, params_str },
         );
         const RegIndexers = .{
-            index.Indexer2f(.Morton4, 1),
             index.Indexer2f(.Morton8, 1),
             index.Indexer2f(.Morton16, 1),
             index.Indexer2f(.Morton32, 1),
             index.Indexer2f(.Morton64, 1),
             index.Indexer2f(.Morton128, 1),
-            index.Indexer2f(.Zigzag4, 1),
             index.Indexer2f(.Zigzag16, 1),
             index.Indexer2f(.Zigzag64, 1),
         };
