@@ -180,7 +180,7 @@ pub fn checkVolumesOverlap(a: anytype, b: anytype) bool {
 }
 
 /// Returns a box that covers both a and b.
-pub fn getEncompassingBox(a: anytype, b: anytype) Box2f {
+pub fn getBoundingBox(a: anytype, b: anytype) Box2f {
     const box_a = a.getBoundingBox();
     const box_b = b.getBoundingBox();
     return .{
@@ -300,151 +300,7 @@ fn segmentIntersectsBox(start: Vec2f, end: Vec2f, box_min: Vec2f, box_max: Vec2f
     return true;
 }
 
-pub const TestVolumes = struct {
-    balls: std.ArrayList(Ball2f),
-    boxes: std.ArrayList(Box2f),
-    oriented_boxes: std.ArrayList(OrientedBox2f),
-    const Self = @This();
-
-    pub fn initRandom(
-        allocator: std.mem.Allocator,
-        random: std.Random,
-        capacity: usize,
-        size_dist: ProbDensityFunc,
-        position_dist: ProbDensityFunc,
-    ) !Self {
-        var random_floats = try allocator.alloc(f32, capacity);
-        defer allocator.free(random_floats);
-        var random_vecs = try allocator.alloc(Vec2f, capacity);
-        defer allocator.free(random_vecs);
-        // generate random balls
-        ProbDensityFunc.fillFloat(size_dist, random, random_floats[0..]);
-        ProbDensityFunc.fillVec2f(position_dist, random, random_vecs[0..]);
-        var rand_balls = try std.ArrayList(Ball2f).initCapacity(allocator, capacity);
-        for (0..capacity) |i| {
-            rand_balls.appendAssumeCapacity(.{
-                .centre = random_vecs[i],
-                .radius = random_floats[i],
-            });
-        }
-        // generate random boxes
-        ProbDensityFunc.fillFloat(size_dist, random, random_floats[0..]);
-        ProbDensityFunc.fillVec2f(position_dist, random, random_vecs[0..]);
-        var rand_boxes = try std.ArrayList(Box2f).initCapacity(allocator, capacity);
-        for (0..capacity) |i| {
-            const j = (i + capacity / 2) % capacity;
-            const dim = Vec2f{ 2 * random_floats[i], 2 * random_floats[j] };
-            const box = Box2f{ .min = random_vecs[i], .max = random_vecs[i] + dim };
-            rand_boxes.appendAssumeCapacity(box);
-        }
-        // generate random oriented boxes
-        ProbDensityFunc.fillFloat(size_dist, random, random_floats[0..]);
-        ProbDensityFunc.fillVec2f(position_dist, random, random_vecs[0..]);
-        const tau_dist = ProbDensityFunc{ .uniform = .{ .min = 0, .max = math.tau } };
-        var rand_obbs = try std.ArrayList(OrientedBox2f).initCapacity(allocator, capacity);
-        for (0..capacity) |i| {
-            const j = (i + capacity / 2) % capacity;
-            const angle = ProbDensityFunc.getFloat(tau_dist, random);
-            rand_obbs.appendAssumeCapacity(.{
-                .centre = random_vecs[i],
-                .half_extents = .{ random_floats[i], random_floats[j] },
-                .axis = .{ @cos(angle), @sin(angle) },
-            });
-        }
-        return .{
-            .balls = rand_balls,
-            .boxes = rand_boxes,
-            .oriented_boxes = rand_obbs,
-        };
-    }
-
-    /// Loads test volumes from a csv file; rows must match below format:
-    ///  - ball, centre_x, centre_y, radius
-    ///  - box, min_x, min_y, max_x, max_y
-    ///  - obb, centre_x, centre_y, half_extent_x, half_extent_y, axis_x, axis_y
-    pub fn initCsv(allocator: std.mem.Allocator, io: std.Io, filepath: []const u8) !Self {
-        const contents = try std.Io.Dir.cwd().readFileAlloc(io, filepath, allocator, .unlimited);
-        defer allocator.free(contents);
-
-        var ball_list: std.ArrayList(Ball2f) = .empty;
-        errdefer ball_list.deinit(allocator);
-        var box_list: std.ArrayList(Box2f) = .empty;
-        errdefer box_list.deinit(allocator);
-        var obb_list: std.ArrayList(OrientedBox2f) = .empty;
-        errdefer obb_list.deinit(allocator);
-
-        var lines = std.mem.tokenizeAny(u8, contents, "\r\n");
-        while (lines.next()) |line| {
-            const trimmed = std.mem.trim(u8, line, " \t");
-            if (trimmed.len == 0) continue;
-            var fields = std.mem.splitScalar(u8, trimmed, ',');
-            const kind = fields.next() orelse return error.InvalidCsvRow;
-            if (std.ascii.eqlIgnoreCase(kind, "ball")) {
-                const cx = try parseCsvFloat(&fields);
-                const cy = try parseCsvFloat(&fields);
-                const r = try parseCsvFloat(&fields);
-                try ball_list.append(allocator, .{ .centre = .{ cx, cy }, .radius = r });
-            } else if (std.ascii.eqlIgnoreCase(kind, "box")) {
-                const min_x = try parseCsvFloat(&fields);
-                const min_y = try parseCsvFloat(&fields);
-                const max_x = try parseCsvFloat(&fields);
-                const max_y = try parseCsvFloat(&fields);
-                try box_list.append(allocator, .{ .min = .{ min_x, min_y }, .max = .{ max_x, max_y } });
-            } else if (std.ascii.eqlIgnoreCase(kind, "obb")) {
-                const cx = try parseCsvFloat(&fields);
-                const cy = try parseCsvFloat(&fields);
-                const hx = try parseCsvFloat(&fields);
-                const hy = try parseCsvFloat(&fields);
-                const ax = try parseCsvFloat(&fields);
-                const ay = try parseCsvFloat(&fields);
-                try obb_list.append(allocator, .{
-                    .centre = .{ cx, cy },
-                    .half_extents = .{ hx, hy },
-                    .axis = .{ ax, ay },
-                });
-            } else {
-                return error.UnknownVolumeType;
-            }
-        }
-        ball_list.shrinkAndFree(allocator, ball_list.items.len);
-        box_list.shrinkAndFree(allocator, box_list.items.len);
-        obb_list.shrinkAndFree(allocator, obb_list.items.len);
-
-        return .{
-            .balls = ball_list,
-            .boxes = box_list,
-            .oriented_boxes = obb_list,
-        };
-    }
-
-    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-        self.balls.deinit(allocator);
-        self.boxes.deinit(allocator);
-        self.oriented_boxes.deinit(allocator);
-    }
-
-    pub fn getRandomBodies(self: *Self, comptime T: type) []T {
-        return switch (T) {
-            Ball2f => self.balls.items,
-            Box2f => self.boxes.items,
-            OrientedBox2f => self.oriented_boxes.items,
-            else => unreachable,
-        };
-    }
-
-    fn parseCsvFloat(fields: *std.mem.SplitIterator(u8, .scalar)) !f32 {
-        const field = fields.next() orelse return error.InvalidCsvRow;
-        return std.fmt.parseFloat(f32, field);
-    }
-};
-
 const testing = std.testing;
-const test_alloc = testing.allocator;
-const test_num_volumes = 16000;
-const test_min_extent = 0.1;
-const test_max_extent = 5.0;
-const test_space_min = -50;
-const test_space_max = 50;
 
 test "balls overlap" {
     const a = Ball2f{ .centre = .{ 0, 0 }, .radius = 1.0 };
@@ -605,7 +461,7 @@ test "line-box overlap" {
 test "encompassing boxes" {
     const a = Box2f{ .min = .{ -0.139, -0.139 }, .max = .{ 0.139, 0.139 } };
     const b = Box2f{ .min = .{ -0.735, -0.2 }, .max = .{ 0.2, 0.735 } };
-    const c = getEncompassingBox(a, b);
+    const c = getBoundingBox(a, b);
     try testing.expectEqual(@min(a.min, b.min), c.min);
     try testing.expectEqual(@max(a.max, b.max), c.max);
 }

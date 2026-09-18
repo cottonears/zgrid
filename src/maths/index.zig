@@ -1,10 +1,11 @@
 const std = @import("std");
 const calc = @import("calc.zig");
 const curve = @import("curve.zig");
-const vol = @import("volume.zig");
+const rand = @import("rand.zig");
+const volume = @import("volume.zig");
 const math = std.math;
 const Curve = curve.Curve;
-const Box2f = vol.Box2f;
+const Box2f = volume.Box2f;
 const Vec2f = calc.Vec2f;
 
 /// Recursively indexes a region on the 2D plane.
@@ -223,11 +224,9 @@ pub fn Indexer2f(
     };
 }
 
-const svg = @import("svg.zig");
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
-const test_dist: calc.ProbDensityFunc = .{ .uniform = .{ .min = -5.0, .max = 5.0 } };
-var test_dir = "test-out";
+const test_dist: rand.ProbDensityFunc = .{ .uniform = .{ .min = -5.0, .max = 5.0 } };
 
 test "hexa tree indexing" {
     const Indexer = Indexer2f(Curve.Spring16, 1);
@@ -308,11 +307,11 @@ test "compressed indexing test" {
     // finally, generate some random points and check their indexes are identical in both trees
     var reg_indexer = try RegIndexer.init(.{ 0, 0 }, .{ 8, 8 });
     var comp_indexer = try CompIndexer.init(.{ 0, 0 }, .{ 8, 8 });
-    const seed = calc.getClockBasedRngSeed(testing.io);
+    const seed = rand.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
-    errdefer calc.printErrorMessageForRandomSeed(seed);
+    errdefer rand.printErrorMessageForRandomSeed(seed);
     var test_pts: [1000]Vec2f = undefined;
-    calc.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &test_pts);
+    rand.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &test_pts);
     for (test_pts) |p| {
         const r_idx = reg_indexer.getLeafIndexForPoint(p);
         const c_idx = comp_indexer.getLeafIndexForPoint(p);
@@ -326,11 +325,11 @@ test "inter-leaf distances are bounded" {
         Indexer2f(Curve.Spring16, 1),
         Indexer2f(Curve.Zigzag16, 1),
     };
-    const seed = calc.getClockBasedRngSeed(testing.io);
+    const seed = rand.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
-    errdefer calc.printErrorMessageForRandomSeed(seed);
+    errdefer rand.printErrorMessageForRandomSeed(seed);
     var test_pts: [500]Vec2f = undefined;
-    calc.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &test_pts);
+    rand.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &test_pts);
     const min_pt = Vec2f{ -5, -5 };
     const max_pt = Vec2f{ 5, 5 };
     // check that any points (within the region) who share an index are relatively close
@@ -371,11 +370,11 @@ test "leaf index round trip" {
         Indexer2f(Curve.Spring16, 1),
         Indexer2f(Curve.Zigzag16, 1),
     };
-    const seed = calc.getClockBasedRngSeed(testing.io);
+    const seed = rand.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
-    errdefer calc.printErrorMessageForRandomSeed(seed);
+    errdefer rand.printErrorMessageForRandomSeed(seed);
     var random_pts: [2]Vec2f = undefined;
-    calc.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &random_pts);
+    rand.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &random_pts);
     const min_pt = Vec2f{ -5, -5 };
     const max_pt = Vec2f{ 5, 5 };
     // check that every leaf tiles part of the region, and its centre indexes back to it
@@ -387,7 +386,7 @@ test "leaf index round trip" {
             const cell = indexer.getLeafCellBoundary(leaf);
             const centre = cell.getCentre();
             const centre_index = indexer.getLeafIndexForPoint(centre);
-            try testing.expect(vol.checkVolumesOverlap(region, cell));
+            try testing.expect(volume.checkVolumesOverlap(region, cell));
             try testing.expect(@reduce(.And, cell.min >= region.min));
             try testing.expect(@reduce(.And, cell.max <= region.max));
             try testing.expect(@reduce(.And, centre > region.min));
@@ -398,11 +397,11 @@ test "leaf index round trip" {
 }
 
 test "check get leaf cell neighbours in centre" {
-    const seed = calc.getClockBasedRngSeed(testing.io);
+    const seed = rand.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
-    errdefer calc.printErrorMessageForRandomSeed(seed);
+    errdefer rand.printErrorMessageForRandomSeed(seed);
     var random_pts: [100]Vec2f = undefined;
-    calc.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &random_pts);
+    rand.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &random_pts);
     const Indexer = Indexer2f(Curve.Zigzag16, 1);
     const indexer = try Indexer.init(.{ -10, -10 }, .{ 10, 10 });
     // check size and values match what is expected
@@ -447,39 +446,4 @@ test "check get leaf cell neighbours near edge" {
     }
     // every leaf index should have been found at least once
     for (idx_seen) |s| try testing.expectEqual(true, s);
-}
-
-test "draw indexer curves" {
-    const Indexers = .{
-        Indexer2f(Curve.Morton64, 2),
-        Indexer2f(Curve.Spring64, 1),
-        Indexer2f(Curve.Zigzag64, 1),
-    };
-    const bg_style: svg.ShapeStyle = .{ .fill_active = true, .fill_hsl = .{ 0, 0, 95 } };
-    const line_style: svg.ShapeStyle = .{ .stroke_width = 2, .stroke_hsl = .{ 90, 60, 40 } };
-    const min_pt = Vec2f{ 0, 0 };
-    const max_pt = Vec2f{ 1024, 1024 };
-    // draw some pretty pictures of the indexers' curves so they can be eyeballed.
-    inline for (Indexers) |Indexer| {
-        const idx = try Indexer.init(min_pt, max_pt);
-        var pts: [Indexer.num_leaves]Vec2f = undefined;
-        var curve_lenth: f32 = 0.0;
-        for (0..pts.len) |i| {
-            const cell = idx.getLeafCellBoundary(@truncate(i));
-            pts[i] = cell.getCentre();
-            if (i > 0) {
-                curve_lenth += calc.norm(pts[i] - pts[i - 1]);
-            }
-        }
-        var test_canvas = try svg.Canvas.init(test_alloc, min_pt, max_pt, bg_style);
-        defer test_canvas.deinit(test_alloc);
-        try test_canvas.addPolyline(test_alloc, &pts, line_style);
-        var sbuff: [128]u8 = undefined;
-        const length_str = try std.fmt.bufPrint(&sbuff, "length = {d:.1}\n", .{curve_lenth});
-        const text_loc = min_pt + calc.scaledVec(0.5, max_pt - min_pt);
-        try test_canvas.addText(test_alloc, text_loc, length_str, 20, .{ 0, 0, 0 });
-        const fpath = try std.fmt.bufPrint(&sbuff, "{s}/{any}.html", .{ test_dir, Indexer });
-        try test_canvas.writeHtml(test_alloc, testing.io, fpath, true);
-        // operator should inspect the output: expect("looks good to me")
-    }
 }

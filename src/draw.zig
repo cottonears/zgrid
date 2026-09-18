@@ -3,13 +3,13 @@ const mem = std.mem;
 const Vec2f = @Vector(2, f32);
 
 /// A struct that can be used to compose images from basic shapes. Useful for testing.
-pub const Canvas = struct {
+pub const SvgCanvas = struct {
     min: Vec2f,
     max: Vec2f,
     str: std.ArrayList(u8),
     const Self = @This();
 
-    pub fn init(allocator: mem.Allocator, min: Vec2f, max: Vec2f, background_style: ShapeStyle) !Self {
+    pub fn init(allocator: mem.Allocator, min: Vec2f, max: Vec2f, background_style: Style) !Self {
         const str = try std.ArrayList(u8).initCapacity(allocator, 2000);
         var canvas: Self = .{ .min = min, .max = max, .str = str };
         errdefer canvas.str.deinit(allocator);
@@ -21,7 +21,7 @@ pub const Canvas = struct {
         self.str.deinit(allocator);
     }
 
-    pub fn addLine(self: *Self, allocator: mem.Allocator, start: Vec2f, end: Vec2f, style: ShapeStyle) !void {
+    pub fn addLine(self: *Self, allocator: mem.Allocator, start: Vec2f, end: Vec2f, style: Style) !void {
         var sbuff: [256]u8 = undefined;
         const style_str = try style.getElementString(&sbuff);
         const element_str = try std.fmt.allocPrint(
@@ -33,7 +33,7 @@ pub const Canvas = struct {
         try self.str.appendSlice(allocator, element_str);
     }
 
-    pub fn addPolyline(self: *Self, allocator: mem.Allocator, points: []Vec2f, style: ShapeStyle) !void {
+    pub fn addPolyline(self: *Self, allocator: mem.Allocator, points: []Vec2f, style: Style) !void {
         var sbuff: [128]u8 = undefined;
         const style_str = try style.getElementString(&sbuff);
         var pts_char_list = try std.ArrayList(u8).initCapacity(allocator, points.len * 12);
@@ -53,7 +53,7 @@ pub const Canvas = struct {
         try self.str.appendSlice(allocator, element_str);
     }
 
-    pub fn addRectangle(self: *Self, allocator: mem.Allocator, start: Vec2f, end: Vec2f, style: ShapeStyle) !void {
+    pub fn addRectangle(self: *Self, allocator: mem.Allocator, start: Vec2f, end: Vec2f, style: Style) !void {
         var sbuff: [128]u8 = undefined;
         const style_str = try style.getElementString(&sbuff);
         const d = end - start;
@@ -66,7 +66,7 @@ pub const Canvas = struct {
         try self.str.appendSlice(allocator, element_str);
     }
 
-    pub fn addCircle(self: *Self, allocator: mem.Allocator, centre: Vec2f, radius: f32, style: ShapeStyle) !void {
+    pub fn addCircle(self: *Self, allocator: mem.Allocator, centre: Vec2f, radius: f32, style: Style) !void {
         var sbuff: [128]u8 = undefined;
         const style_str = try style.getElementString(&sbuff);
         const element_str = try std.fmt.allocPrint(
@@ -78,7 +78,7 @@ pub const Canvas = struct {
         try self.str.appendSlice(allocator, element_str);
     }
 
-    pub fn addPolygon(self: *Self, allocator: mem.Allocator, points: []Vec2f, style: ShapeStyle) !void {
+    pub fn addPolygon(self: *Self, allocator: mem.Allocator, points: []Vec2f, style: Style) !void {
         var sbuff: [128]u8 = undefined;
         const style_str = try style.getElementString(&sbuff);
         var pts_char_list = try std.ArrayList(u8).initCapacity(allocator, points.len * 12);
@@ -164,7 +164,7 @@ pub const Canvas = struct {
     }
 };
 
-pub const ShapeStyle = struct {
+pub const Style = struct {
     fill_active: bool = false,
     fill_hsl: [3]u9 = .{ 0, 0, 0 },
     fill_opacity: f32 = 1.0,
@@ -174,7 +174,7 @@ pub const ShapeStyle = struct {
     stroke_opacity: f32 = 1.0,
     stroke_dashed: bool = false,
 
-    pub fn getElementString(style: *const ShapeStyle, buff_ptr: []u8) ![]u8 {
+    pub fn getElementString(style: *const Style, buff_ptr: []u8) ![]u8 {
         var len: usize = 0;
         if (style.fill_active) {
             len = (try std.fmt.bufPrint(
@@ -269,7 +269,7 @@ pub const RandomHslPalette = struct {
 const testing = std.testing;
 const canvas_min: Vec2f = .{ 0, 0 };
 const canvas_max: Vec2f = .{ 800, 600 };
-const bg_style = ShapeStyle{
+const bg_style = Style{
     .fill_active = true,
     .fill_hsl = .{ 0, 0, 90 },
     .stroke_hsl = .{ 0, 0, 0 },
@@ -293,15 +293,15 @@ test "add elements" {
         [_]f32{ 200, 300 },
         [_]f32{ 100, 150 },
     };
-    var canvas = try Canvas.init(testing.allocator, canvas_min, canvas_max, bg_style);
+    var canvas = try SvgCanvas.init(testing.allocator, canvas_min, canvas_max, bg_style);
     defer canvas.deinit(testing.allocator);
     var pal = try RandomHslPalette.init(std.testing.allocator, 4, 0);
     defer pal.deinit(std.testing.allocator);
 
-    const style_0 = ShapeStyle{ .stroke_hsl = pal.hsl_colours[0], .stroke_dashed = true };
-    const style_1 = ShapeStyle{ .stroke_hsl = pal.hsl_colours[1] };
-    const style_2 = ShapeStyle{ .stroke_hsl = pal.hsl_colours[2] };
-    const style_3 = ShapeStyle{ .stroke_hsl = pal.hsl_colours[3] };
+    const style_0 = Style{ .stroke_hsl = pal.hsl_colours[0], .stroke_dashed = true };
+    const style_1 = Style{ .stroke_hsl = pal.hsl_colours[1] };
+    const style_2 = Style{ .stroke_hsl = pal.hsl_colours[2] };
+    const style_3 = Style{ .stroke_hsl = pal.hsl_colours[3] };
     try canvas.addRectangle(testing.allocator, [_]f32{ -200, 0 }, [_]f32{ -200, 200 }, style_0);
     try canvas.addPolygon(testing.allocator, points[0..], style_1);
     try canvas.addCircle(testing.allocator, [_]f32{ 0, 200 }, 10.0, style_2);

@@ -324,8 +324,7 @@ fn getTiledLookup(
     comptime Index: type,
     comptime n: usize,
 ) struct { forward: [n][n]Index, reverse: [n * n][2]u16 } {
-    @setEvalBranchQuota(100_000);
-
+    @setEvalBranchQuota(200_000);
     const base = comptime Curve.base(curve);
     const levels = comptime (math.log2_int(u16, n) / math.log2_int(u16, base));
     const max_levels = if (base == 2) 4 else 2;

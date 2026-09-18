@@ -3,14 +3,17 @@ const builtin = @import("builtin");
 const zgrid = @import("zgrid");
 const calc = zgrid.calc;
 const index = zgrid.index;
+const rand = zgrid.rand;
 const st = zgrid.square_tree;
-const vol = zgrid.volume;
+const volume = zgrid.volume;
 const ArgsIter = std.process.Args.Iterator;
-const Vec2f = calc.Vec2f;
-const Ball2f = vol.Ball2f;
-const Box2f = vol.Box2f;
-const Line2f = vol.Line2f;
-const OrientedBox2f = vol.OrientedBox2f;
+const Vec2f = zgrid.Vec2f;
+const Ball2f = zgrid.Ball2f;
+const Box2f = zgrid.Box2f;
+const Line2f = zgrid.Line2f;
+const OrientedBox2f = zgrid.OrientedBox2f;
+const ProbDensityFunc = rand.ProbDensityFunc;
+const TestVolumes = rand.TestVolumes;
 const timer = std.Io.Clock.awake;
 const max_capacity = 200_000;
 const min_trials = 10;
@@ -28,9 +31,9 @@ const usage_msg =
 ;
 var input_file: ?[]const u8 = null;
 var output_dir: ?[]const u8 = null;
-var random_vols: vol.TestVolumes = undefined;
-var position_dist: calc.ProbDensityFunc = .{ .normal = .{ .mean = 5.0, .stddev = 1.5 } };
-var size_dist: calc.ProbDensityFunc = .{ .uniform = .{ .min = 0.001, .max = 0.05 } };
+var random_vols: TestVolumes = undefined;
+var position_dist: ProbDensityFunc = .{ .normal = .{ .mean = 5.0, .stddev = 1.5 } };
+var size_dist: ProbDensityFunc = .{ .uniform = .{ .min = 0.001, .max = 0.05 } };
 var num_vols: u24 = if (builtin.mode == .ReleaseFast) 20_000 else 2_000;
 var num_trials: u8 = 30;
 const untimed_trials = 3;
@@ -55,13 +58,13 @@ fn processArgs(io: std.Io, args_iter: *ArgsIter) !void {
             input_file = file;
         } else if (std.mem.eql(u8, arg, "-p")) {
             const pdf_str = try nextArgValue(args_iter, arg);
-            position_dist = calc.ProbDensityFunc.fromPdfString(pdf_str) catch {
+            position_dist = ProbDensityFunc.fromPdfString(pdf_str) catch {
                 std.debug.print("Could not parse pdf string '{s}':\n{s}", .{ pdf_str, usage_msg });
                 return error.InvalidPdfArgument;
             };
         } else if (std.mem.eql(u8, arg, "-s")) {
             const pdf_str = try nextArgValue(args_iter, arg);
-            size_dist = calc.ProbDensityFunc.fromPdfString(pdf_str) catch {
+            size_dist = ProbDensityFunc.fromPdfString(pdf_str) catch {
                 std.debug.print("Could not parse pdf string '{s}':\n{s}", .{ pdf_str, usage_msg });
                 return error.InvalidPdfArgument;
             };
@@ -106,11 +109,11 @@ pub fn main(init: std.process.Init) !void {
     try processArgs(init.io, &args_iter);
 
     if (input_file) |file| {
-        random_vols = try vol.TestVolumes.initCsv(allocator, init.io, file);
+        random_vols = try TestVolumes.initCsv(allocator, init.io, file);
         std.debug.print("Running benchmarks using volumes loaded from '{s}'...\n", .{file});
     } else {
         var prng = std.Random.DefaultPrng.init(0);
-        random_vols = try vol.TestVolumes.initRandom(allocator, prng.random(), num_vols, size_dist, position_dist);
+        random_vols = try TestVolumes.initRandom(allocator, prng.random(), num_vols, size_dist, position_dist);
         std.debug.print("Running benchmarks for {} vols...\n", .{num_vols});
     }
     defer random_vols.deinit(allocator);
@@ -126,7 +129,6 @@ fn elapsedNs(t1: std.Io.Timestamp, t2: std.Io.Timestamp) f64 {
 
 fn benchmarkIndexing(allocator: std.mem.Allocator, io: std.Io) !void {
     const IndexerTypes = [_]type{
-        index.Indexer2f(.Morton8, 1),
         index.Indexer2f(.Morton16, 1),
         index.Indexer2f(.Morton32, 1),
         index.Indexer2f(.Morton64, 1),
@@ -207,12 +209,12 @@ fn benchmarkOverlapChecks(allocator: std.mem.Allocator, io: std.Io) !void {
     // untimed warmup trials
     var n: usize = 0;
     for (0..untimed_trials) |_| {
-        for (random_vols.balls.items) |b| n += if (vol.checkVolumesOverlap(first_ball, b)) 1 else 0;
-        for (random_vols.boxes.items) |b| n += if (vol.checkVolumesOverlap(query_box, b)) 1 else 0;
-        for (random_vols.balls.items) |b| n += if (vol.checkVolumesOverlap(query_box, b)) 1 else 0;
-        for (random_vols.boxes.items) |b| n += if (vol.checkVolumesOverlap(first_ball, b)) 1 else 0;
-        for (random_vols.boxes.items) |b| n += if (vol.checkVolumesOverlap(query_obb, b)) 1 else 0;
-        for (random_vols.boxes.items) |b| n += if (vol.checkVolumesOverlap(query_line, b)) 1 else 0;
+        for (random_vols.balls.items) |b| n += if (volume.checkVolumesOverlap(first_ball, b)) 1 else 0;
+        for (random_vols.boxes.items) |b| n += if (volume.checkVolumesOverlap(query_box, b)) 1 else 0;
+        for (random_vols.balls.items) |b| n += if (volume.checkVolumesOverlap(query_box, b)) 1 else 0;
+        for (random_vols.boxes.items) |b| n += if (volume.checkVolumesOverlap(first_ball, b)) 1 else 0;
+        for (random_vols.boxes.items) |b| n += if (volume.checkVolumesOverlap(query_obb, b)) 1 else 0;
+        for (random_vols.boxes.items) |b| n += if (volume.checkVolumesOverlap(query_line, b)) 1 else 0;
     }
 
     // timed trials
@@ -223,26 +225,26 @@ fn benchmarkOverlapChecks(allocator: std.mem.Allocator, io: std.Io) !void {
     for (0..num_trials) |_| {
         const t_0 = timer.now(io);
         for (random_vols.balls.items) |b| {
-            overlap_count += if (vol.checkVolumesOverlap(first_ball, b)) 1 else 0;
+            overlap_count += if (volume.checkVolumesOverlap(first_ball, b)) 1 else 0;
         }
         const t_1 = timer.now(io);
         for (random_vols.boxes.items) |b| {
-            overlap_count += if (vol.checkVolumesOverlap(query_box, b)) 1 else 0;
+            overlap_count += if (volume.checkVolumesOverlap(query_box, b)) 1 else 0;
         }
         const t_2 = timer.now(io);
         for (random_vols.balls.items) |b| {
-            overlap_count += if (vol.checkVolumesOverlap(query_box, b)) 1 else 0;
+            overlap_count += if (volume.checkVolumesOverlap(query_box, b)) 1 else 0;
         }
         for (random_vols.boxes.items) |b| {
-            overlap_count += if (vol.checkVolumesOverlap(first_ball, b)) 1 else 0;
+            overlap_count += if (volume.checkVolumesOverlap(first_ball, b)) 1 else 0;
         }
         const t_3 = timer.now(io);
         for (random_vols.boxes.items) |b| {
-            overlap_count += if (vol.checkVolumesOverlap(query_obb, b)) 1 else 0;
+            overlap_count += if (volume.checkVolumesOverlap(query_obb, b)) 1 else 0;
         }
         const t_4 = timer.now(io);
         for (random_vols.boxes.items) |b| {
-            overlap_count += if (vol.checkVolumesOverlap(query_line, b)) 1 else 0;
+            overlap_count += if (volume.checkVolumesOverlap(query_line, b)) 1 else 0;
         }
         const t_5 = timer.now(io);
         try table.addRow(.{
@@ -262,12 +264,12 @@ fn benchmarkOverlapChecks(allocator: std.mem.Allocator, io: std.Io) !void {
 
 fn benchmarkSquareTrees(allocator: std.mem.Allocator, io: std.Io) !void {
     // these params control the amount + extent of per-frame external overlap + neighbour queries
-    const ext_overlap_amount: f32 = 0.05; // number queries = 5% of number of entities
+    const ext_overlap_amount: f32 = 0.05; // number queries = 5% of number of vols
     const ext_overlap_scale: f32 = 0.05; // query radius is 5% of world extent
-    const near_search_k: u8 = 5; // each neighbourhood search finds the 5 nearest entities
-    const near_search_amount: f32 = 0.05; // number queries = 5% of number of entities
+    const near_search_k: u8 = 5; // each neighbourhood search finds the 5 nearest vols
+    const near_search_amount: f32 = 0.05; // number queries = 5% of number of vols
     const near_search_scale: f32 = 0.05; // max query radius = 5% of world extent
-    // not parameterised, 100% of entities do overlap checks against other entities stored in tree
+    // NOTE: findSelfOverlaps always checks 100% all stored volumes
     var buf: [256]u8 = undefined;
     const params_str = try std.fmt.bufPrint(
         &buf,
@@ -277,7 +279,7 @@ fn benchmarkSquareTrees(allocator: std.mem.Allocator, io: std.Io) !void {
     inline for (.{ Ball2f, Box2f }) |V| {
         std.debug.print(
             "\nRunning regular tree benchmarks for {d} {any}...\n{s}\n",
-            .{ random_vols.getRandomBodies(V).len, V, params_str },
+            .{ random_vols.getVolumes(V).len, V, params_str },
         );
         const RegIndexers = .{
             index.Indexer2f(.Morton8, 1),
@@ -303,7 +305,7 @@ fn benchmarkSquareTrees(allocator: std.mem.Allocator, io: std.Io) !void {
         }
         std.debug.print(
             "\nRunning compressed tree benchmarks for {d} {any}..\n{s}\n",
-            .{ random_vols.getRandomBodies(V).len, V, params_str },
+            .{ random_vols.getVolumes(V).len, V, params_str },
         );
         const CompIndexers = .{
             index.Indexer2f(.Morton64, 2),
@@ -352,7 +354,7 @@ fn benchmarkTree(
     };
     var table = try DataTable(f64, 6, headers, formats).init(allocator, num_trials);
     defer table.deinit(allocator);
-    const bodies = random_vols.getRandomBodies(TreeType.VolumeType);
+    const bodies = random_vols.getVolumes(TreeType.VolumeType);
     const pair_buf = try allocator.alloc([2]TreeType.ClientIdType, 1024 * bodies.len);
     defer allocator.free(pair_buf);
     var entity_indexes = try allocator.alloc(TreeType.ClientIdType, bodies.len);
