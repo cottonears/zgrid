@@ -337,6 +337,7 @@ pub fn SquareTree(
             return shared_buf.getItems();
         }
 
+        // TODO: refactor this so it doesn't take / return an id!
         /// Returns id pairs for stored volumes that overlap with the provided query volume.
         /// Requires `updateBounds` to have been called since the last `addVolume`.
         /// Single-threaded (no io dependency) but not thread-safe (writes to scratch bufs).
@@ -534,6 +535,7 @@ pub fn SquareTree(
 
         /// Draws a tree's grid subdivisions, cell labels, and stored volumes to an svg file.
         /// Accepts a pointer to any tree exposing the same public interface as `SquareTree`.
+        /// TODO: move outside square_tree.zig (make a helper in a future tree interface).
         pub fn drawTreeSvg(
             self: *Self,
             allocator: Allocator,
@@ -870,6 +872,23 @@ test "hex tree overlap ball" {
     try testing.expectEqualSlices([2]u16, &expected_self, self_overlaps);
 }
 
+test "short overlap buffer returns a capacity error" {
+    const Tree = SquareTree(index.Indexer2f(.Zigzag16, 1), Ball2f, u32);
+    var tree = try Tree.init(test_alloc, .{ -1, -1 }, .{ 1, 1 }, 16, 0);
+    defer tree.deinit(test_alloc);
+    const balls = [_]Ball2f{.{ .centre = .{ 0, 0 }, .radius = 0.5 }} ** 16;
+    const ids = calc.getRange(u32, balls.len);
+
+    // add the volumes and check the expected error ius retturned
+    try tree.addVolumes(&balls, &ids);
+    try tree.updateBounds();
+    var buf: [32][2]u32 = undefined;
+    const result_st = tree.findSelfOverlaps(buf[0..4]);
+    const result_mt = tree.findSelfOverlapsParallel(testing.io, buf[0..4]);
+    try testing.expectError(error.BufferCapacityExceeded, result_st);
+    try testing.expectError(error.BufferCapacityExceeded, result_mt);
+}
+
 test "hex tree overlap box" {
     const HexTree2 = SquareTree(index.Indexer2f(.Zigzag16, 1), Box2f, u16);
     var tree = try HexTree2.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0);
@@ -902,22 +921,7 @@ test "hex tree overlap box" {
     try testing.expectEqualSlices([2]u16, &expected_self, self_overlaps);
 }
 
-test "short overlap buffer returns a capacity error" {
-    const Tree = SquareTree(index.Indexer2f(.Zigzag16, 1), Ball2f, u32);
-    var tree = try Tree.init(test_alloc, .{ -1, -1 }, .{ 1, 1 }, 16, 0);
-    defer tree.deinit(test_alloc);
-    const balls = [_]Ball2f{.{ .centre = .{ 0, 0 }, .radius = 0.5 }} ** 16;
-    const ids = calc.getRange(u32, balls.len);
-
-    // add the volumes and check the expected error ius retturned
-    try tree.addVolumes(&balls, &ids);
-    try tree.updateBounds();
-    var buf: [32][2]u32 = undefined;
-    const result_st = tree.findSelfOverlaps(buf[0..4]);
-    const result_mt = tree.findSelfOverlapsParallel(testing.io, buf[0..4]);
-    try testing.expectError(error.BufferCapacityExceeded, result_st);
-    try testing.expectError(error.BufferCapacityExceeded, result_mt);
-}
+// TODO: add simple test for external line vs tree volumes
 
 test "tree occupancy counts are accurate" {
     const seed = rand.getClockBasedRngSeed(testing.io);
