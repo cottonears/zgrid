@@ -240,9 +240,9 @@ const zigzag256 = getTiledLookup(.Zigzag256, u16, 256);
 const zigzag256_fwd = zigzag256.forward;
 const zigzag256_inv = zigzag256.reverse;
 
+/// Gets the curve index at the specified grid coords.
+/// Inverse of `getCoords`.
 pub fn getIndex(comptime curve: Curve, row: u16, col: u16) Curve.index(curve) {
-    // TODO: if curve LUT is not pre-computed raise comptime error
-    // otherwise, use lookup tables here to retun index
     return switch (curve) {
         .Morton2 => morton2_fwd[row][col],
         .Morton4 => morton4_fwd[row][col],
@@ -263,9 +263,9 @@ pub fn getIndex(comptime curve: Curve, row: u16, col: u16) Curve.index(curve) {
     };
 }
 
+/// Gets the grid coords for the given curve index.
+/// Inverse of `getIndex`.
 pub fn getCoords(comptime curve: Curve, index: Curve.index(curve)) [2]u16 {
-    // TODO: if curve LUT is not pre-computed raise comptime error
-    // otherwise, use lookup tables here to retun index
     return switch (curve) {
         .Morton2 => morton2_inv[index],
         .Morton4 => morton4_inv[index],
@@ -286,7 +286,6 @@ pub fn getCoords(comptime curve: Curve, index: Curve.index(curve)) [2]u16 {
     };
 }
 
-// gets a partial index by applying a lookup table upto 8 bits long
 // Gets a partial index by applying a lookup table up to 8 bits long.
 fn getPartialIndex(
     comptime curve: Curve,
@@ -377,11 +376,9 @@ test "check tile to fill" {
         .Morton64,
         .Morton128,
         .Morton256,
-
         .Spring16,
         .Spring64,
         .Spring256,
-
         .Zigzag16,
         .Zigzag64,
         .Zigzag256,

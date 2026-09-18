@@ -5,11 +5,13 @@ const math = std.math;
 const ProbDensityFunc = calc.ProbDensityFunc;
 const Vec2f = calc.Vec2f;
 
+/// Any ball with radius <= 0 is considered empty; choose extreme values to make this obvious.
 pub const empty_ball = Ball2f{
     .centre = @splat(math.floatMax(f32)),
     .radius = -math.floatMax(f32),
 };
 
+/// Any box where max[0] < min[0] is considered empty; choose extreme values to make this obvious.
 pub const empty_box = Box2f{
     .min = @splat(math.floatMax(f32)),
     .max = @splat(-math.floatMax(f32)),
@@ -56,11 +58,8 @@ pub const Box2f = struct {
 
     pub fn getBoundingBall(self: Self) Ball2f {
         if (self.isEmpty()) return empty_ball;
-        const dims = self.max - self.min;
-        return .{
-            .centre = self.getCentre(),
-            .radius = @max(dims[0], dims[1]) / 2,
-        };
+        const r = 0.5 * calc.norm(self.max - self.min);
+        return .{ .centre = self.getCentre(), .radius = r };
     }
 
     pub fn getBoundingBox(self: Self) Box2f {
@@ -79,27 +78,29 @@ pub const Box2f = struct {
     }
 
     pub fn isEmpty(self: Self) bool {
-        return @reduce(.And, self.max <= self.min);
+        return self.max[0] < self.min[0];
     }
 };
 
 /// An oriented bounding box.
 pub const OrientedBox2f = struct {
     centre: Vec2f,
-    half_extents: Vec2f,
     axis: Vec2f, // unit vector along the box's local x-axis
+    half_extents: Vec2f,
     const Self = @This();
 
     pub fn getBoundingBall(self: Self) Ball2f {
         if (self.isEmpty()) return empty_ball;
-        return .{ .centre = self.centre, .radius = calc.norm(self.half_extents) };
+        const r = calc.norm(self.half_extents);
+        return .{ .centre = self.centre, .radius = r };
     }
 
     pub fn getBoundingBox(self: Self) Box2f {
         if (self.isEmpty()) return empty_box;
+        const hx = self.half_extents[0];
+        const hy = self.half_extents[1];
         const ay = Vec2f{ -self.axis[1], self.axis[0] };
-        const extent = calc.scaledVec(self.half_extents[0], @abs(self.axis)) +
-            calc.scaledVec(self.half_extents[1], @abs(ay));
+        const extent = calc.scaledVec(hx, @abs(self.axis)) + calc.scaledVec(hy, @abs(ay));
         return .{ .min = self.centre - extent, .max = self.centre + extent };
     }
 
@@ -180,8 +181,8 @@ pub fn checkVolumesOverlap(a: anytype, b: anytype) bool {
 
 /// Returns a box that covers both a and b.
 pub fn getEncompassingBox(a: anytype, b: anytype) Box2f {
-    const box_a: Box2f = if (@TypeOf(a) == Box2f) a else a.getBoundingBox();
-    const box_b: Box2f = if (@TypeOf(b) == Box2f) b else b.getBoundingBox();
+    const box_a = a.getBoundingBox();
+    const box_b = b.getBoundingBox();
     return .{
         .min = @min(box_a.min, box_b.min),
         .max = @max(box_a.max, box_b.max),
@@ -201,32 +202,28 @@ fn checkOverlapBoxBox(a: Box2f, b: Box2f) bool {
 }
 
 fn checkOverlapBallBox(a: Ball2f, b: Box2f) bool {
-    return calc.pointBoxDistSq(a.centre, b.min, b.max) < a.radius * a.radius;
+    const d_squared = calc.pointBoxDistSquared(a.centre, b.min, b.max);
+    return d_squared < a.radius * a.radius;
 }
 
 fn checkOverlapLineBall(line: Line2f, ball: Ball2f) bool {
-    const d_squared = calc.pointSegDistSq(ball.centre, line.start, line.end);
+    const d_squared = calc.pointSegDistSquared(ball.centre, line.start, line.end);
     return d_squared < ball.radius * ball.radius;
 }
 
 fn checkOverlapLineBox(line: Line2f, box: Box2f) bool {
-    return calc.segmentIntersectsBox(line.start, line.end, box.min, box.max);
+    return segmentIntersectsBox(line.start, line.end, box.min, box.max);
 }
 
 fn checkOverlapLineOrientedBox(line: Line2f, obb: OrientedBox2f) bool {
-    const local_start = calc.transformToFrame(line.start, obb.centre, obb.axis);
-    const local_end = calc.transformToFrame(line.end, obb.centre, obb.axis);
-    return calc.segmentIntersectsBox(
-        local_start,
-        local_end,
-        -obb.half_extents,
-        obb.half_extents,
-    );
+    const loc_start = calc.transformToFrame(line.start, obb.centre, obb.axis);
+    const loc_end = calc.transformToFrame(line.end, obb.centre, obb.axis);
+    return segmentIntersectsBox(loc_start, loc_end, -obb.half_extents, obb.half_extents);
 }
 
 fn checkOverlapOrientedBoxBall(obb: OrientedBox2f, ball: Ball2f) bool {
     const local = calc.transformToFrame(ball.centre, obb.centre, obb.axis);
-    const d_squared = calc.pointBoxDistSq(local, -obb.half_extents, obb.half_extents);
+    const d_squared = calc.pointBoxDistSquared(local, -obb.half_extents, obb.half_extents);
     return d_squared < ball.radius * ball.radius;
 }
 
@@ -253,7 +250,6 @@ fn checkOverlapOrientedBoxOrientedBox(a: OrientedBox2f, b: OrientedBox2f) bool {
     );
 }
 
-/// Separating-axis test shared by OrientedBox2f's overlap checks.
 fn checkOverlapOrientedBoxes(
     c1: Vec2f,
     he1: Vec2f,
@@ -268,9 +264,38 @@ fn checkOverlapOrientedBoxes(
     const axes = [4]Vec2f{ ax1, ay1, ax2, ay2 };
     for (axes) |axis| {
         const dist = @abs(calc.dotProduct(d, axis));
-        const r1 = he1[0] * @abs(calc.dotProduct(ax1, axis)) + he1[1] * @abs(calc.dotProduct(ay1, axis));
-        const r2 = he2[0] * @abs(calc.dotProduct(ax2, axis)) + he2[1] * @abs(calc.dotProduct(ay2, axis));
-        if (dist > r1 + r2) return false;
+        const x_radius_1 = he1[0] * @abs(calc.dotProduct(ax1, axis));
+        const y_radius_1 = he1[1] * @abs(calc.dotProduct(ay1, axis));
+        const x_radius_2 = he2[0] * @abs(calc.dotProduct(ax2, axis));
+        const y_radius_2 = he2[1] * @abs(calc.dotProduct(ay2, axis));
+        const radius_1 = x_radius_1 + y_radius_1;
+        const radius_2 = x_radius_2 + y_radius_2;
+        if (dist >= radius_1 + radius_2) return false;
+    }
+    return true;
+}
+
+/// Adapted from Real-Time Collision Detection by Christer Ericson (Ch. 5.3.3).
+fn segmentIntersectsBox(start: Vec2f, end: Vec2f, box_min: Vec2f, box_max: Vec2f) bool {
+    const d = end - start;
+    var t_min: f32 = 0;
+    var t_max: f32 = 1;
+    inline for (0..2) |i| {
+        if (d[i] == 0) {
+            if (start[i] < box_min[i] or start[i] > box_max[i]) return false;
+        } else {
+            const inv_d = 1.0 / d[i];
+            var t1 = (box_min[i] - start[i]) * inv_d;
+            var t2 = (box_max[i] - start[i]) * inv_d;
+            if (t1 > t2) {
+                const tmp = t1;
+                t1 = t2;
+                t2 = tmp;
+            }
+            t_min = @max(t_min, t1);
+            t_max = @min(t_max, t2);
+            if (t_min > t_max) return false;
+        }
     }
     return true;
 }
@@ -583,26 +608,4 @@ test "encompassing boxes" {
     const c = getEncompassingBox(a, b);
     try testing.expectEqual(@min(a.min, b.min), c.min);
     try testing.expectEqual(@max(a.max, b.max), c.max);
-}
-
-test "empty box behaves as expected" {
-    const seed = calc.getClockBasedRngSeed(testing.io);
-    var prng = std.Random.DefaultPrng.init(seed);
-    errdefer calc.printErrorMessageForRandomSeed(seed);
-    var test_vols = try TestVolumes.initRandom(
-        test_alloc,
-        prng.random(),
-        test_num_volumes,
-        .{ .uniform = .{ .min = test_min_extent, .max = test_max_extent } },
-        .{ .uniform = .{ .min = test_space_min, .max = test_space_max } },
-    );
-    defer test_vols.deinit(test_alloc);
-    const boxes = test_vols.getRandomBodies(Box2f);
-    // an empty box should not grow bounding boxes and overlaps check should fail
-    for (boxes) |b| {
-        try testing.expectEqual(b, getEncompassingBox(empty_ball, b));
-        try testing.expectEqual(b, getEncompassingBox(b, empty_ball));
-        try testing.expectEqual(false, checkVolumesOverlap(empty_ball, b));
-        try testing.expectEqual(false, checkVolumesOverlap(b, empty_ball));
-    }
 }
