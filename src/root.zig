@@ -11,6 +11,7 @@ pub const Line2f = volume.Line2f;
 pub const OrientedBox2f = volume.OrientedBox2f;
 pub const Vec2f = calc.Vec2f;
 
+// TODO: add option to draw grid cell labels + colourise overlap index text
 /// Draws a tree's grid subdivisions, cell labels, and stored volumes to an svg file.
 /// Accepts a pointer to any tree exposing the same public interface as `SquareTree`.
 /// NOTE: tightly coupled to square tree at the moment: will need work when another tree is added.
