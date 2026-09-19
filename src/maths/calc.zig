@@ -1,8 +1,7 @@
-//! Contains core integer and float maths functions used throughout this library.
+//! Basic maths (integer and float) and sorting functions used throughout the library.
 const std = @import("std");
 const math = std.math;
 pub const Vec2f = @Vector(2, f32);
-pub const zero2f = Vec2f{ 0, 0 };
 
 /// Gets an array containing the range: 0, 1, ... len - 1.
 pub fn getRange(comptime T: type, comptime len: u24) [len]T {
@@ -42,6 +41,67 @@ pub fn sortPairsLexicographic(comptime T: type, pairs: [][2]T) void {
             return std.mem.lessThan(T, &a, &b);
         }
     }.less);
+}
+
+/// Performs an 8-bit radix sort for the provided keys + values
+pub fn radixPass8(
+    comptime K: type,
+    comptime V: type,
+    shift: u8,
+    in_keys: []const K,
+    in_vals: []const V,
+    out_keys: []K,
+    out_vals: []V,
+) void {
+    std.debug.assert(in_keys.len == in_vals.len);
+    std.debug.assert(in_keys.len == out_keys.len);
+    std.debug.assert(in_vals.len == out_vals.len);
+    var counts = [_]u32{0} ** 256;
+    for (in_keys) |key| {
+        const digit: u8 = @truncate(key >> @intCast(shift));
+        counts[digit] += 1;
+    }
+    // counts[i] now stores the number of inputs with key i
+    for (1..counts.len) |i| counts[i] += counts[i - 1];
+    // counts[i] now stores the number of inputs with key <= i
+    var i = in_keys.len;
+    while (i > 0) {
+        i -= 1;
+        const digit: u8 = @truncate(in_keys[i] >> @intCast(shift));
+        counts[digit] -= 1;
+        const dest = counts[digit];
+        out_keys[dest] = in_keys[i];
+        out_vals[dest] = in_vals[i];
+    }
+}
+
+// Performs a radix sort (8 bits at a time)
+pub fn radixSort8(
+    K: type, // integer
+    V: type,
+    keys_a: []K,
+    vals_a: []V,
+    keys_b: []K,
+    vals_b: []V,
+) struct { keys: []K, values: []V } {
+    std.debug.assert(keys_a.len == vals_a.len);
+    std.debug.assert(keys_a.len == keys_b.len);
+    std.debug.assert(vals_a.len == vals_b.len);
+    const bsk = @bitSizeOf(K);
+    const iters = (bsk + 7) / 8;
+    inline for (0..iters) |i| {
+        const shift = (i * 8);
+        if (i % 2 == 0) {
+            radixPass8(K, V, shift, keys_a, vals_a, keys_b, vals_b);
+        } else {
+            radixPass8(K, V, shift, keys_b, vals_b, keys_a, vals_a);
+        }
+    }
+    if (iters % 2 == 0) {
+        return .{ .keys = keys_a, .values = vals_a };
+    } else {
+        return .{ .keys = keys_b, .values = vals_b };
+    }
 }
 
 /// Converts the integer k to a 32 bit float. Saves a bit of typing.
@@ -133,6 +193,7 @@ pub fn transformToFrame(p: Vec2f, frame_origin: Vec2f, frame_axis: Vec2f) Vec2f 
 
 const testing = std.testing;
 const tolerance = 0.0001;
+const zero2f = Vec2f{ 0, 0 };
 
 test "pow-2n sequence" {
     try testing.expectEqual([_]usize{ 4, 16, 64, 256 }, getPow2nSequence(2, 1, 4));
@@ -188,4 +249,28 @@ test "closest dist interval" {
 
     const perpendicular_result = solveMinDistSquaredClamp(pos_a, Vec2f{ 1, 0 }, pos_b, Vec2f{ 0, 1 }, -3, 3);
     try testing.expectApproxEqAbs(0, perpendicular_result[1], tolerance);
+}
+
+test "radix pass" {
+    const in_keys = [_]u5{ 25, 7, 18, 9, 4, 3, 2, 1 };
+    const in_vals = [_]u8{ 'z', 'g', 'r', 'i', 'd', 'c', 'b', 'a' };
+    var out_keys: [in_keys.len]u5 = undefined;
+    var out_vals: [in_vals.len]u8 = undefined;
+    radixPass8(u5, u8, 0, in_keys[0..], in_vals[0..], &out_keys, &out_vals);
+    for (1..in_keys.len) |i| {
+        try testing.expect(out_keys[i - 1] < out_keys[i]);
+    }
+    // std.debug.print("out_vals = {s}\n", .{out_vals});
+}
+
+test "radix sort" {
+    var keys_a = [3]u13{ 657, 477, 456 };
+    var vals_a = [3][2]u8{ .{ 'z', 'g' }, .{ 'r', 'i' }, .{ 'r', 'd' } };
+    var keys_b: [3]u13 = undefined;
+    var vals_b: [3][2]u8 = undefined;
+    const sorted = radixSort8(u13, [2]u8, &keys_a, &vals_a, &keys_b, &vals_b);
+    for (1..sorted.keys.len) |i| {
+        try testing.expect(sorted.keys[i - 1] < sorted.keys[i]);
+    }
+    // std.debug.print("sorted_vals = {any}\n", .{sorted.values});
 }

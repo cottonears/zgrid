@@ -130,7 +130,7 @@ test "tree self overlaps matches brute force" {
         defer tree.deinit(test_alloc);
         const indexes = calc.getRange(u16, num_vols);
         try tree.addVolumes(bodies, &indexes);
-        try tree.updateBoundsParallel(testing.io);
+        try tree.buildParallel(testing.io);
         var expected: std.ArrayList([2]u16) = .empty;
         defer expected.deinit(test_alloc);
         for (bodies, 0..) |a, i| {
@@ -169,7 +169,7 @@ test "tree neighbours matches brute force" {
     const boxes = test_vols.getVolumes(Ball2f);
     const indexes = calc.getRange(Tree.ClientId, num_vols);
     try tree.addVolumes(boxes, &indexes);
-    try tree.updateBounds();
+    try tree.build();
     // check for closest neighbours between all pairs
     var expected: [num_vols][3]Tree.Neighbour = undefined;
     var neighbour_storage: [num_vols][3]Tree.Neighbour = undefined;
@@ -240,7 +240,7 @@ test "draw trees" {
         const bodies = test_vols.getVolumes(T.Volume);
         const indexes = calc.getRange(u16, num_vols);
         try tree.addVolumes(bodies, &indexes);
-        try tree.updateBounds();
+        try tree.build();
         var canvas = try drawTreeSvg(T, &tree, test_alloc, true);
         defer canvas.deinit(test_alloc);
         var buf: [512]u8 = undefined;

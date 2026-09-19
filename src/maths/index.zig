@@ -208,9 +208,10 @@ pub fn Indexer2f(
         /// Gets the row + column number for the provided point in the leaf-level grid.
         /// Map from R^2 -> grid coords.
         fn getGridCoordsForPoint(self: *const Self, point: Vec2f) GridCoords {
+            const zero_vec = Vec2f{ 0, 0 };
             const offset = point - self.min_pt;
             const offset_scaled = calc.scaledVec(self.inv_cell_size, offset);
-            const offset_clamped = math.clamp(offset_scaled, calc.zero2f, coord_max_vec2f);
+            const offset_clamped = math.clamp(offset_scaled, zero_vec, coord_max_vec2f);
             return .{ .row = @trunc(offset_clamped[1]), .col = @trunc(offset_clamped[0]) };
         }
 

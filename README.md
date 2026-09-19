@@ -56,9 +56,9 @@ pub fn main(init: std.process.Init) !void {
     var entity_ids: [3]u16 = .{ 0, 1, 2 };
 
     // square trees can be rebuilt cheaply: clear and update every frame
-    tree.clearStoredVolumes();
+    tree.clear();
     try tree.addVolumes(entity_aabbs[0..], entity_ids[0..]);
-    tree.updateBounds();
+    tree.build();
 
     // check for overlaps with an external volume with findOverlaps
     var query_buff: [3]u16 = undefined; // NOTE: slice of u16s
@@ -112,6 +112,7 @@ Neighbouring leaves' volumes are also frequently adjacent in memory, though this
 ## Indexing
 (Write about the recursive indexing techniques used)
 
+![Spring16](docs/img/curve_spring_16.svg)
 ![Morton16](docs/img/curve_morton_16.svg)
 ![ZigZag16](docs/img/curve_zigzag_16.svg)
 
@@ -127,7 +128,7 @@ Neighbouring leaves' volumes are also frequently adjacent in memory, though this
 - [X] Add findExtOverlapsSingle.
 - [X] Improve indexing performance.
 - [ ] Implement `getExpandedVolume(V, vol, velocity, time_step)` (makes conservative BVs for moving bodies); required to prevent tunnelling.
-- [ ] Parallelise updateBounds (with a radix sort?).
+- [ ] Parallelise build (with a radix sort?).
 - [ ] Move benchmark to a separate repo to reduce compile times.
 - [ ] Revamp this readme.
 - [ ] Set up CI (`zig build test` on push).

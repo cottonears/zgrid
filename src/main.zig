@@ -387,9 +387,9 @@ fn benchmarkTree(
     // untimed warmup trials
     var n: usize = 0;
     for (0..untimed_trials) |_| {
-        tree.clearStoredVolumes();
+        tree.clear();
         try tree.addVolumes(bodies, entity_indexes);
-        try tree.updateBoundsParallel(io);
+        try tree.buildParallel(io);
         n += (try tree.findSelfOverlapsParallel(io, pair_buf)).len;
         for (nbufs, 0..) |*buf, i| buf.* = neighbour_buf[i * neighbour_k ..][0..neighbour_k];
         const neighbour_results = try tree.findNeighboursParallel(
@@ -410,10 +410,10 @@ fn benchmarkTree(
     var ext_overlaps: usize = 0;
     for (0..num_trials) |_| {
         const t_0 = timer.now(io);
-        tree.clearStoredVolumes();
+        tree.clear();
         try tree.addVolumes(bodies, entity_indexes);
         const t_1 = timer.now(io);
-        try tree.updateBoundsParallel(io);
+        try tree.buildParallel(io);
         const t_2 = timer.now(io);
         overlaps = (try tree.findSelfOverlapsParallel(io, pair_buf)).len;
         const t_3 = timer.now(io);
