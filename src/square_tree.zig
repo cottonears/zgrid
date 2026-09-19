@@ -8,6 +8,7 @@ const draw = @import("draw.zig");
 const math = std.math;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const AtomicRangeIter = para.AtomicRangeIter;
 const Vec2f = calc.Vec2f;
 const Ball2f = vol.Ball2f;
 const Box2f = vol.Box2f;
@@ -155,14 +156,142 @@ pub fn SquareTree(
             const n = self.num_volumes;
             if (n + vols.len > self.staged_data.len) return Error.TreeCapacityExceeded;
             if (vols.len != client_ids.len) return error.InputLengthMismatch;
-            var staged_vol_slice = self.staged_data[n .. n + vols.len];
-            var staged_id_slice = self.staged_ids[n .. n + vols.len];
-            for (vols, client_ids, 0..) |v, c, i| {
-                staged_vol_slice[i] = v;
-                staged_id_slice[i] = c;
-            }
+            @memcpy(self.staged_data[n..][0..vols.len], vols);
+            @memcpy(self.staged_ids[n..][0..client_ids.len], client_ids);
             self.num_volumes += vols.len;
             self.bounds_valid = false;
+        }
+
+        /// Sorts staged volumes into their final positions, then updates all nodes' BVs.
+        /// Single-threaded but not thread-safe.
+        pub fn build(self: *Self) !void {
+            var idx_iter = AtomicRangeIter.init(0, self.num_volumes, 1);
+            self.indexStagedVolumes(&idx_iter, &self.max_half_extent);
+            @memset(self.leaf_counts, 0);
+            try self.countSortStagedVolumes();
+            var range_iter = AtomicRangeIter.init(0, nodes_in_level[0], 1);
+            self.updateSubtreeBvsWorker(0, &range_iter);
+            self.bounds_valid = true;
+        }
+
+        /// Sorts staged volumes into their final positions, then updates all nodes' BVs.
+        /// Does work in parallel if the io implementation supports it; not thread-safe.
+        pub fn buildParallel(self: *Self, io: Io) !void {
+            const max_idx_workers = 8;
+            var group: Io.Group = .init;
+            errdefer group.cancel(io);
+            // first index points and update max-half-extent (if compressed)
+            const index_workers = @min(max_idx_workers, @max(1, self.max_async_workers - 1));
+            var worker_mhes: [max_idx_workers]Vec2f = undefined;
+            var count_iter = AtomicRangeIter.init(0, self.num_volumes, index_workers);
+            for (0..index_workers) |i| {
+                const args = .{ self, &count_iter, &worker_mhes[i] };
+                group.async(io, indexStagedVolumes, args);
+            }
+            @memset(self.leaf_counts, 0);
+            try group.await(io);
+            var mhe: Vec2f = @splat(0);
+            for (0..index_workers) |i| mhe = @max(mhe, worker_mhes[i]);
+            self.max_half_extent = mhe;
+            // then count-sort
+            @memset(self.leaf_counts, 0);
+            try self.countSortStagedVolumes();
+            const target_parts = update_bv_parts_per_worker * @as(usize, self.max_async_workers);
+            const parts = @min(bv_top_nodes, math.ceilPowerOfTwoAssert(usize, target_parts));
+            const workers = @min(self.max_async_workers, parts);
+            var range_iter = AtomicRangeIter.init(0, bv_top_nodes, parts);
+            // build lower levels' bounding volumes updated in parallel
+            for (0..workers) |_| {
+                group.async(io, updateSubtreeBvsWorker, .{ self, bv_top_lvl, &range_iter });
+            }
+            try group.await(io);
+            // build upper levels' bounding volumes serially
+            var lvl = bv_top_lvl;
+            while (lvl > 0) {
+                lvl -= 1;
+                self.updateLevelBvs(lvl, 0, nodes_in_level[lvl]);
+            }
+            self.bounds_valid = true;
+        }
+
+        // Indexes a range of staged volumes and computes their max half extent
+        fn indexStagedVolumes(self: *Self, staging_iter: *AtomicRangeIter, max_half_ext: *Vec2f) void {
+            var mhe: Vec2f = @splat(0);
+            while (staging_iter.next()) |r| {
+                for (r.start..r.end) |i| {
+                    const v = self.staged_data[i];
+                    const leaf_index = self.indexer.getLeafIndexForPoint(v.getCentre());
+                    self.staged_indexes[i] = leaf_index;
+                    if (compressed) {
+                        const bb = v.getBoundingBox();
+                        const he = calc.scaledVec(0.5, bb.max - bb.min);
+                        mhe = @max(mhe, he);
+                    }
+                }
+            }
+            max_half_ext.* = mhe;
+        }
+
+        /// counts, sorts, and stores staged volumes into leaf_data in leaf_starts.
+        fn countSortStagedVolumes(self: *Self) !void {
+            const num_vols = self.num_volumes;
+            for (self.staged_indexes[0..num_vols]) |i| {
+                const data_index = self.leaf_counts[i];
+                if (data_index == math.maxInt(DataIndex)) return Error.LeafCapacityExceeded;
+                self.leaf_counts[i] = data_index + 1;
+            }
+            self.leaf_starts[0] = 0;
+            var offset: StartIndex = 0;
+            for (self.leaf_counts, 1..) |count, i| {
+                self.leaf_starts[i] = offset;
+                offset += count;
+            }
+            for (
+                self.staged_data[0..num_vols],
+                self.staged_ids[0..num_vols],
+                self.staged_indexes[0..num_vols],
+            ) |v, id, leaf_index| {
+                const cursor = &self.leaf_starts[@as(usize, leaf_index) + 1];
+                self.leaf_data[cursor.*] = v;
+                self.leaf_ids[cursor.*] = id;
+                cursor.* += 1;
+            }
+        }
+
+        /// Computes leaf and ancestor BVs up until the top_lvl.
+        fn updateSubtreeBvsWorker(self: *const Self, top_lvl: u4, range_iter: *AtomicRangeIter) void {
+            const leaf_bvs = self.node_bvs[depth - 1];
+            const num_leaf_succs = Indexer.getNumberLeafSuccessors(@truncate(top_lvl));
+            // leaf BVs must be computed first
+            while (range_iter.next()) |range| {
+                const num_subtrees = range.end - range.start;
+                for (range.start * num_leaf_succs..range.end * num_leaf_succs) |i| {
+                    var box = vol.empty_box;
+                    for (self.leaf_data[self.leaf_starts[i]..self.leaf_starts[i + 1]]) |v| {
+                        box = vol.getBoundingBox(box, v);
+                    }
+                    leaf_bvs[i] = box;
+                }
+                var lvl: u4 = depth - 1;
+                while (lvl > top_lvl) {
+                    lvl -= 1;
+                    const scale = nodes_in_level[lvl] / nodes_in_level[top_lvl];
+                    self.updateLevelBvs(lvl, range.start * scale, num_subtrees * scale);
+                }
+            }
+        }
+
+        /// Fits BVs around children for count nodes on lvl (starting at first).
+        fn updateLevelBvs(self: *const Self, lvl: u4, first: usize, count: usize) void {
+            const child_bvs = self.node_bvs[lvl + 1];
+            for (self.node_bvs[lvl][first..][0..count], first..) |*bv, j| {
+                var box = vol.empty_box;
+                const first_child = Indexer.getFirstChild(@truncate(j));
+                for (child_bvs[first_child..][0..Indexer.num_children]) |c| {
+                    box = vol.getBoundingBox(box, c);
+                }
+                bv.* = box;
+            }
         }
 
         /// Removes all volumes stored in leaf-nodes of the grid.
@@ -199,113 +328,6 @@ pub fn SquareTree(
             self.indexer = try Indexer.init(new_min, new_max);
         }
 
-        /// Sorts volumes staged by `addVolume` into their final positions, then
-        /// grows all nodes' bounding volumes to cover the volumes stored under them.
-        /// Single-threaded but not thread-safe.
-        pub fn build(self: *Self) !void {
-            try self.sortStagedVolumes();
-            var range_iter = para.AtomicRangeIter.init(0, nodes_in_level[0], 1);
-            self.updateSubtreeBvsWorker(0, &range_iter);
-            self.bounds_valid = true;
-        }
-
-        /// Sorts volumes staged by `addVolume` into their final positions, then
-        /// grows all nodes' bounding volumes to cover the volumes stored under them.
-        /// Does work in parallel if the io implementation supports it; not thread-safe.
-        pub fn buildParallel(self: *Self, io: Io) !void {
-            try self.sortStagedVolumes();
-            const target_parts = update_bv_parts_per_worker * @as(usize, self.max_async_workers);
-            const parts = @min(bv_top_nodes, math.ceilPowerOfTwoAssert(usize, target_parts));
-            const workers = @min(self.max_async_workers, parts);
-            var range_iter = para.AtomicRangeIter.init(0, bv_top_nodes, parts);
-            var group: Io.Group = .init;
-            errdefer group.cancel(io);
-            // lower levels' bounding volumes updated in parallel
-            for (0..workers) |_| {
-                group.async(io, updateSubtreeBvsWorker, .{ self, bv_top_lvl, &range_iter });
-            }
-            try group.await(io);
-            // upper levels' bounding volumes are updated serially
-            var lvl = bv_top_lvl;
-            while (lvl > 0) {
-                lvl -= 1;
-                self.updateLevelBvs(lvl, 0, nodes_in_level[lvl]);
-            }
-            self.bounds_valid = true;
-        }
-
-        /// sorts, and stores staged volumes into leaf_data in leaf_starts.
-        fn sortStagedVolumes(self: *Self) !void {
-            @memset(self.leaf_counts, 0);
-            const num_vols = self.num_volumes;
-            var mhe: Vec2f = @splat(0);
-            for (self.staged_data[0..num_vols], 0..) |v, i| {
-                const leaf_index = self.indexer.getLeafIndexForPoint(v.getCentre());
-                if (compressed) {
-                    const bb = v.getBoundingBox();
-                    const he = calc.scaledVec(0.5, bb.max - bb.min);
-                    mhe = @max(mhe, he);
-                }
-                self.staged_indexes[i] = leaf_index;
-                const data_index = self.leaf_counts[leaf_index];
-                if (data_index == math.maxInt(DataIndex)) return Error.LeafCapacityExceeded;
-                self.leaf_counts[leaf_index] = data_index + 1;
-            }
-            self.max_half_extent = @max(self.max_half_extent, mhe);
-            self.leaf_starts[0] = 0;
-            var offset: StartIndex = 0;
-            for (self.leaf_counts, 1..) |count, i| {
-                self.leaf_starts[i] = offset;
-                offset += count;
-            }
-            for (
-                self.staged_data[0..num_vols],
-                self.staged_ids[0..num_vols],
-                self.staged_indexes[0..num_vols],
-            ) |v, id, leaf_index| {
-                const cursor = &self.leaf_starts[@as(usize, leaf_index) + 1];
-                self.leaf_data[cursor.*] = v;
-                self.leaf_ids[cursor.*] = id;
-                cursor.* += 1;
-            }
-        }
-
-        /// Computes leaf and ancestor BVs up until the top_lvl.
-        fn updateSubtreeBvsWorker(self: *const Self, top_lvl: u4, range_iter: *para.AtomicRangeIter) void {
-            const leaf_bvs = self.node_bvs[depth - 1];
-            const num_leaf_succs = Indexer.getNumberLeafSuccessors(@truncate(top_lvl));
-            // leaf BVs must be computed first
-            while (range_iter.next()) |range| {
-                const num_subtrees = range.end - range.start;
-                for (range.start * num_leaf_succs..range.end * num_leaf_succs) |i| {
-                    var box = vol.empty_box;
-                    for (self.leaf_data[self.leaf_starts[i]..self.leaf_starts[i + 1]]) |v| {
-                        box = vol.getBoundingBox(box, v);
-                    }
-                    leaf_bvs[i] = box;
-                }
-                var lvl: u4 = depth - 1;
-                while (lvl > top_lvl) {
-                    lvl -= 1;
-                    const scale = nodes_in_level[lvl] / nodes_in_level[top_lvl];
-                    self.updateLevelBvs(lvl, range.start * scale, num_subtrees * scale);
-                }
-            }
-        }
-
-        /// Fits a bv around its children, for `count` nodes on `lvl` starting at `first`.
-        fn updateLevelBvs(self: *const Self, lvl: u4, first: usize, count: usize) void {
-            const child_bvs = self.node_bvs[lvl + 1];
-            for (self.node_bvs[lvl][first..][0..count], first..) |*bv, j| {
-                var box = vol.empty_box;
-                const first_child = Indexer.getFirstChild(@truncate(j));
-                for (child_bvs[first_child..][0..Indexer.num_children]) |c| {
-                    box = vol.getBoundingBox(box, c);
-                }
-                bv.* = box;
-            }
-        }
-
         /// Returns id pairs for stored volumes that overlap with the provided query volumes.
         /// Requires `build` to have been called since the last `addVolume`.
         /// Single-threaded (no io dependency) but not thread-safe (writes to scratch bufs).
@@ -317,7 +339,7 @@ pub fn SquareTree(
         ) Error![][2]ClientId {
             if (query_ids.len != query_vols.len) return error.InputLengthMismatch;
             if (!self.bounds_valid) return error.TreeNotBuilt;
-            var range_iter = para.AtomicRangeIter.init(0, query_ids.len, 1);
+            var range_iter = AtomicRangeIter.init(0, query_ids.len, 1);
             var shared_buf = para.SharedBuffer([2]ClientId).init(overlap_buf);
             self.findExtOverlapsWorker(
                 self.scratch_a[0..num_leaves],
@@ -349,7 +371,7 @@ pub fn SquareTree(
                     tree: *const Self,
                     scratch_a: []CurveIndex,
                     scratch_b: []CurveIndex,
-                    range_iter: *para.AtomicRangeIter,
+                    range_iter: *AtomicRangeIter,
                     shared_buf: *para.SharedBuffer([2]ClientId),
                     ids: []const ClientId,
                     vols: @TypeOf(query_vols),
@@ -359,7 +381,7 @@ pub fn SquareTree(
             };
             const num_parts = query_part_sizer.getParts(query_ids.len, self.max_async_workers);
             const num_workers = query_part_sizer.getWorkers(num_parts, self.max_async_workers);
-            var range_iter = para.AtomicRangeIter.init(0, query_ids.len, num_parts);
+            var range_iter = AtomicRangeIter.init(0, query_ids.len, num_parts);
             var shared_buf = para.SharedBuffer([2]ClientId).init(overlap_buf);
             var group: Io.Group = .init;
             errdefer group.cancel(io);
@@ -397,7 +419,7 @@ pub fn SquareTree(
             self: *const Self,
             scratch_a: []CurveIndex,
             scratch_b: []CurveIndex,
-            range_iter: *para.AtomicRangeIter,
+            range_iter: *AtomicRangeIter,
             shared_buf: *para.SharedBuffer([2]ClientId),
             query_ids: []const ClientId,
             query_vols: anytype,
@@ -417,7 +439,7 @@ pub fn SquareTree(
         /// Single-threaded (no io dependency) but not thread-safe (writes to scratch bufs).
         pub fn findSelfOverlaps(self: *Self, overlap_buf: [][2]ClientId) Error![][2]ClientId {
             if (!self.bounds_valid) return error.TreeNotBuilt;
-            var range_iter = para.AtomicRangeIter.init(0, self.num_volumes, 1);
+            var range_iter = AtomicRangeIter.init(0, self.num_volumes, 1);
             var shared_buf = para.SharedBuffer([2]ClientId).init(overlap_buf);
             self.findSelfOverlapWorker(
                 self.scratch_a[0..num_leaves],
@@ -441,7 +463,7 @@ pub fn SquareTree(
             if (num_volumes == 0) return overlap_buf[0..0];
             const num_parts = query_part_sizer.getParts(num_volumes, self.max_async_workers);
             const num_workers = query_part_sizer.getWorkers(num_parts, self.max_async_workers);
-            var range_iter = para.AtomicRangeIter.init(0, num_volumes, num_parts);
+            var range_iter = AtomicRangeIter.init(0, num_volumes, num_parts);
             var shared_buf = para.SharedBuffer([2]ClientId).init(overlap_buf);
             var group: Io.Group = .init;
             errdefer group.cancel(io);
@@ -462,7 +484,7 @@ pub fn SquareTree(
             self: *const Self,
             scratch_a: []CurveIndex,
             scratch_b: []CurveIndex,
-            range_iter: *para.AtomicRangeIter,
+            range_iter: *AtomicRangeIter,
             shared_buf: *para.SharedBuffer([2]ClientId),
         ) void {
             // results copied to a small buffer on the stack and flushed to the shared buffer as needed
@@ -562,7 +584,7 @@ pub fn SquareTree(
             if (bufs.len != points.len or bufs.len != excl_ids.len) return error.InputLengthMismatch;
             if (!self.bounds_valid) return error.TreeNotBuilt;
             for (bufs) |buf| if (k > buf.len) return error.BufferCapacityExceeded;
-            var range_iter = para.AtomicRangeIter.init(0, bufs.len, 1);
+            var range_iter = AtomicRangeIter.init(0, bufs.len, 1);
             self.findNeighboursWorker(bufs, points, excl_ids, k, max_dist, &range_iter);
             return bufs;
         }
@@ -586,7 +608,7 @@ pub fn SquareTree(
             if (bufs.len == 0) return bufs;
             const num_parts = query_part_sizer.getParts(bufs.len, self.max_async_workers);
             const num_workers = query_part_sizer.getWorkers(num_parts, self.max_async_workers);
-            var range_iter = para.AtomicRangeIter.init(0, bufs.len, num_parts);
+            var range_iter = AtomicRangeIter.init(0, bufs.len, num_parts);
             var group: Io.Group = .init;
             errdefer group.cancel(io);
             for (0..num_workers) |_| {
@@ -619,7 +641,7 @@ pub fn SquareTree(
             excl_ids: []const ?ClientId,
             k: u16,
             max_dist: f32,
-            range_iter: *para.AtomicRangeIter,
+            range_iter: *AtomicRangeIter,
         ) void {
             while (range_iter.next()) |range| {
                 for (range.start..range.end) |i| {

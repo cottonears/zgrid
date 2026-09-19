@@ -127,8 +127,8 @@ Neighbouring leaves' volumes are also frequently adjacent in memory, though this
 - [X] Implement helper for determining suitable number workers + parts for parallel methods.
 - [X] Add findExtOverlapsSingle.
 - [X] Improve indexing performance.
+- [X] Parallelise build (with a radix sort?).
 - [ ] Implement `getExpandedVolume(V, vol, velocity, time_step)` (makes conservative BVs for moving bodies); required to prevent tunnelling.
-- [ ] Parallelise build (with a radix sort?).
 - [ ] Move benchmark to a separate repo to reduce compile times.
 - [ ] Revamp this readme.
 - [ ] Set up CI (`zig build test` on push).
