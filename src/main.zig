@@ -354,10 +354,10 @@ fn benchmarkTree(
     };
     var table = try DataTable(f64, 6, headers, formats).init(allocator, num_trials);
     defer table.deinit(allocator);
-    const bodies = random_vols.getVolumes(TreeType.VolumeType);
-    const pair_buf = try allocator.alloc([2]TreeType.ClientIdType, 1024 * bodies.len);
+    const bodies = random_vols.getVolumes(TreeType.Volume);
+    const pair_buf = try allocator.alloc([2]TreeType.ClientId, 1024 * bodies.len);
     defer allocator.free(pair_buf);
-    var entity_indexes = try allocator.alloc(TreeType.ClientIdType, bodies.len);
+    var entity_indexes = try allocator.alloc(TreeType.ClientId, bodies.len);
     defer allocator.free(entity_indexes);
     for (0..entity_indexes.len) |i| entity_indexes[i] = @intCast(i);
     const ext_overlap_count = @max(1, @as(usize, @trunc(calc.asf32(bodies.len) * ext_overlap_amount)));
@@ -379,7 +379,7 @@ fn benchmarkTree(
     defer allocator.free(nbufs);
     const neighbour_points = try allocator.alloc(Vec2f, neighbour_count);
     defer allocator.free(neighbour_points);
-    const neighbour_excl_ids = try allocator.alloc(?TreeType.ClientIdType, neighbour_count);
+    const neighbour_excl_ids = try allocator.alloc(?TreeType.ClientId, neighbour_count);
     defer allocator.free(neighbour_excl_ids);
     for (bodies[0..neighbour_count], neighbour_points) |body, *point| point.* = body.getCentre();
     @memset(neighbour_excl_ids, null);

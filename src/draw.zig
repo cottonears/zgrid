@@ -308,7 +308,7 @@ pub const Style = struct {
 
 const DEFAULT_HUE_RANGE = [_]u9{ 0, 360 };
 const DEFAULT_SAT_RANGE = [_]u9{ 50, 70 };
-const DEFAULT_LT_RANGE = [_]u9{ 40, 60 };
+const DEFAULT_LT_RANGE = [_]u9{ 45, 50 };
 
 pub const RandomHslPalette = struct {
     prng: std.Random.DefaultPrng,

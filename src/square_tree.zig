@@ -5,7 +5,6 @@ const rand = @import("maths/rand.zig");
 const vol = @import("maths/volume.zig");
 const para = @import("parallel.zig");
 const draw = @import("draw.zig");
-
 const math = std.math;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -16,9 +15,9 @@ const OrientedBox2f = vol.OrientedBox2f;
 
 /// A data structure that stores volumes + client IDs within an indexed region.
 pub fn SquareTree(
-    comptime Indexer: type, // Indexer used to structure tree.
-    comptime Volume: type, // Type of volumes stored in leaf nodes.
-    comptime ClientId: type, // Caller-chosen ID type.
+    comptime IndexerType: type, // Indexer used to structure tree.
+    comptime VolumeType: type, // Type of volumes stored in leaf nodes.
+    comptime ClientIdType: type, // Caller-chosen ID type.
 ) type {
     return struct {
         indexer: Indexer,
@@ -45,14 +44,15 @@ pub fn SquareTree(
             LeafCapacityExceeded,
             BoundsNotUpdated,
         };
-        pub const ClientIdType = ClientId;
-        pub const CurveIndex = Indexer.CurveIndex;
-        pub const Neighbour = struct { id: ClientId, dist: f32 };
-        pub const VolumeType = Volume;
-        pub const compressed = Indexer.top_levels > 1;
-        pub const depth = Indexer.depth;
-        pub const nodes_in_level = Indexer.nodes_in_level;
-        pub const num_leaves = Indexer.num_leaves;
+        pub const ClientId = ClientIdType;
+        pub const CurveIndex = IndexerType.CurveIndex;
+        pub const Indexer = IndexerType;
+        pub const Neighbour = struct { id: ClientIdType, dist: f32 };
+        pub const Volume = VolumeType;
+        pub const compressed = IndexerType.top_levels > 1;
+        pub const depth = IndexerType.depth;
+        pub const nodes_in_level = IndexerType.nodes_in_level;
+        pub const num_leaves = IndexerType.num_leaves;
         const DataIndex = u16; // Used to index volumes within leaf nodes.
         const StartIndex = u32; // Offset into leaf_data/leaf_ids
         const VolIndex = struct { leaf: CurveIndex, offset: DataIndex }; // locates a stored volume
@@ -64,7 +64,7 @@ pub fn SquareTree(
             .max_parts_per_worker = 32,
         };
         const query_worker_buf_bytes = 16 * 1024; // stack-allocated bytes for each worker
-        const query_worker_buf_pair_len = query_worker_buf_bytes / @sizeOf(ClientId);
+        const query_worker_buf_pair_len = query_worker_buf_bytes / @sizeOf(ClientIdType);
         const update_bv_min_part_nodes = 64; // fewest nodes worth splitting across workers
         const update_bv_parts_per_worker = 4;
         const bv_top_lvl: u4 = blk: { // highest level where update computes bvs in parallel
@@ -82,10 +82,10 @@ pub fn SquareTree(
             max_capacity: u32, // bounds the (heap-allocated) memory for storing volumes
             max_async_workers: u16, // limits the number of workers (0 defaults to cpu_count - 1)
         ) !Self {
-            const indexer = try Indexer.init(bound_1, bound_2);
-            const leaf_data = try allocator.alloc(Volume, max_capacity);
+            const indexer = try IndexerType.init(bound_1, bound_2);
+            const leaf_data = try allocator.alloc(VolumeType, max_capacity);
             errdefer allocator.free(leaf_data);
-            const leaf_ids = try allocator.alloc(ClientId, max_capacity);
+            const leaf_ids = try allocator.alloc(ClientIdType, max_capacity);
             errdefer allocator.free(leaf_ids);
             const leaf_starts = try allocator.alloc(StartIndex, num_leaves + 1);
             errdefer allocator.free(leaf_starts);
@@ -93,9 +93,9 @@ pub fn SquareTree(
             const leaf_counts = try allocator.alloc(DataIndex, num_leaves);
             errdefer allocator.free(leaf_counts);
             @memset(leaf_counts, 0);
-            const staged_data = try allocator.alloc(Volume, max_capacity);
+            const staged_data = try allocator.alloc(VolumeType, max_capacity);
             errdefer allocator.free(staged_data);
-            const staged_ids = try allocator.alloc(ClientId, max_capacity);
+            const staged_ids = try allocator.alloc(ClientIdType, max_capacity);
             errdefer allocator.free(staged_ids);
             const staged_indexes = try allocator.alloc(CurveIndex, max_capacity);
             errdefer allocator.free(staged_indexes);
@@ -146,8 +146,8 @@ pub fn SquareTree(
         /// The volumes are staged: call `updateBounds` before querying.
         pub fn addVolumes(
             self: *Self,
-            vols: []const Volume,
-            client_ids: []const ClientId,
+            vols: []const VolumeType,
+            client_ids: []const ClientIdType,
         ) Error!void {
             if (self.num_volumes + vols.len > self.staged_data.len) return error.TreeCapacityExceeded;
             if (vols.len != client_ids.len) return error.InputLengthMismatch;
@@ -180,8 +180,8 @@ pub fn SquareTree(
         pub fn getOccupancyUnderNode(self: *const Self, lvl: u4, node: CurveIndex) !usize {
             if (!self.bounds_valid) return Error.BoundsNotUpdated;
             std.debug.assert(lvl < depth);
-            const succ_start = Indexer.getFirstLeafSuccessor(@truncate(lvl), node);
-            const succ_end = succ_start + Indexer.getNumberLeafSuccessors(@truncate(lvl));
+            const succ_start = IndexerType.getFirstLeafSuccessor(@truncate(lvl), node);
+            const succ_end = succ_start + IndexerType.getNumberLeafSuccessors(@truncate(lvl));
             var total: usize = 0;
             for (succ_start..succ_end) |i| total += self.leaf_counts[i];
             return total;
@@ -191,14 +191,14 @@ pub fn SquareTree(
         /// Tree must be empty: call `clearStoredVolumes` first.
         pub fn relocate(self: *Self, new_min: Vec2f, new_max: Vec2f) !void {
             if (self.num_volumes > 0) return error.CannotRelocateOccupiedTree;
-            self.indexer = try Indexer.init(new_min, new_max);
+            self.indexer = try IndexerType.init(new_min, new_max);
         }
 
         /// Grows all nodes' bounding volumes to cover all volumes stored under them.
         /// Sorts any volumes staged by `addVolume` into their final position.
         /// Single-threaded but not thread-safe.
         pub fn updateBounds(self: *Self) !void {
-            try self.storeStagedVolumes();
+            try self.processStagedVolumes();
             var range_iter = para.AtomicRangeIter.init(0, nodes_in_level[0], 1);
             self.updateSubtreeBvsWorker(0, &range_iter);
             self.bounds_valid = true;
@@ -208,7 +208,7 @@ pub fn SquareTree(
         /// Sorts any volumes staged by `addVolume` into their final position.
         /// Does work in parallel if the io implementation supports it; not thread-safe.
         pub fn updateBoundsParallel(self: *Self, io: Io) !void {
-            try self.storeStagedVolumes();
+            try self.processStagedVolumes();
             const target_parts = update_bv_parts_per_worker * @as(usize, self.max_async_workers);
             const parts = @min(bv_top_nodes, math.ceilPowerOfTwoAssert(usize, target_parts));
             const workers = @min(self.max_async_workers, parts);
@@ -229,10 +229,56 @@ pub fn SquareTree(
             self.bounds_valid = true;
         }
 
+        /// Indexes, sorts, and stores staged volumes into leaf_data in leaf_starts.
+        fn processStagedVolumes(self: *Self) !void {
+            // TODO: try replace the below with radix-sort to allow for parallel execution
+            // Something like this:
+            // 1. compute leaf_index for every volume
+            // 2. coarse radix partition by high bits of leaf_index
+            // 3. process independent coarse buckets
+            //    - count leaves
+            //    - prefix locally
+            //    - scatter
+            // 4. Build global leaf_starts
+            // see https://www.interviewcake.com/concept/python/radix-sort
+            const num_vols = self.num_volumes;
+            if (num_vols > self.leaf_data.len) return Error.TreeCapacityExceeded;
+            var max_half_extent: Vec2f = @splat(0);
+            for (self.staged_data[0..num_vols], 0..) |v, i| {
+                const leaf_index = self.indexer.getLeafIndexForPoint(v.getCentre());
+                if (compressed) {
+                    const bb = v.getBoundingBox();
+                    const he = calc.scaledVec(0.5, bb.max - bb.min);
+                    max_half_extent = @max(max_half_extent, he);
+                }
+                self.staged_indexes[i] = leaf_index;
+                const data_index = self.leaf_counts[leaf_index];
+                if (data_index == math.maxInt(DataIndex)) return Error.LeafCapacityExceeded;
+                self.leaf_counts[leaf_index] = data_index + 1;
+            }
+            self.max_half_extent = max_half_extent;
+            self.leaf_starts[0] = 0;
+            var offset: StartIndex = 0;
+            for (self.leaf_counts, 1..) |count, i| {
+                self.leaf_starts[i] = offset;
+                offset += count;
+            }
+            for (
+                self.staged_data[0..num_vols],
+                self.staged_ids[0..num_vols],
+                self.staged_indexes[0..num_vols],
+            ) |v, id, leaf_index| {
+                const cursor = &self.leaf_starts[@as(usize, leaf_index) + 1];
+                self.leaf_data[cursor.*] = v;
+                self.leaf_ids[cursor.*] = id;
+                cursor.* += 1;
+            }
+        }
+
         /// Computes leaf and ancestor BVs up until the top_lvl.
         fn updateSubtreeBvsWorker(self: *const Self, top_lvl: u4, range_iter: *para.AtomicRangeIter) void {
             const leaf_bvs = self.node_bvs[depth - 1];
-            const num_leaf_succs = Indexer.getNumberLeafSuccessors(@truncate(top_lvl));
+            const num_leaf_succs = IndexerType.getNumberLeafSuccessors(@truncate(top_lvl));
             // leaf BVs must be computed first
             while (range_iter.next()) |range| {
                 const num_subtrees = range.end - range.start;
@@ -257,8 +303,8 @@ pub fn SquareTree(
             const child_bvs = self.node_bvs[lvl + 1];
             for (self.node_bvs[lvl][first..][0..count], first..) |*bv, j| {
                 var box = vol.empty_box;
-                const first_child = Indexer.getFirstChild(@truncate(j));
-                for (child_bvs[first_child..][0..Indexer.num_children]) |c| {
+                const first_child = IndexerType.getFirstChild(@truncate(j));
+                for (child_bvs[first_child..][0..IndexerType.num_children]) |c| {
                     box = vol.getBoundingBox(box, c);
                 }
                 bv.* = box;
@@ -270,14 +316,14 @@ pub fn SquareTree(
         /// Single-threaded (no io dependency) but not thread-safe (writes to scratch bufs).
         pub fn findExtOverlaps(
             self: *Self,
-            overlap_buf: [][2]ClientId,
-            query_ids: []const ClientId,
+            overlap_buf: [][2]ClientIdType,
+            query_ids: []const ClientIdType,
             query_vols: anytype,
-        ) Error![][2]ClientId {
+        ) Error![][2]ClientIdType {
             if (query_ids.len != query_vols.len) return error.InputLengthMismatch;
             if (!self.bounds_valid) return error.BoundsNotUpdated;
             var range_iter = para.AtomicRangeIter.init(0, query_ids.len, 1);
-            var shared_buf = para.SharedBuffer([2]ClientId).init(overlap_buf);
+            var shared_buf = para.SharedBuffer([2]ClientIdType).init(overlap_buf);
             self.findExtOverlapsWorker(
                 self.scratch_a[0..num_leaves],
                 self.scratch_b[0..num_leaves],
@@ -295,10 +341,10 @@ pub fn SquareTree(
         pub fn findExtOverlapsParallel(
             self: *Self,
             io: Io,
-            overlap_buf: [][2]ClientId,
-            query_ids: []const ClientId,
+            overlap_buf: [][2]ClientIdType,
+            query_ids: []const ClientIdType,
             query_vols: anytype,
-        ) ![][2]ClientId {
+        ) ![][2]ClientIdType {
             if (query_ids.len != query_vols.len) return error.InputLengthMismatch;
             if (!self.bounds_valid) return error.BoundsNotUpdated;
             if (query_ids.len == 0) return overlap_buf[0..0];
@@ -309,8 +355,8 @@ pub fn SquareTree(
                     scratch_a: []CurveIndex,
                     scratch_b: []CurveIndex,
                     range_iter: *para.AtomicRangeIter,
-                    shared_buf: *para.SharedBuffer([2]ClientId),
-                    ids: []const ClientId,
+                    shared_buf: *para.SharedBuffer([2]ClientIdType),
+                    ids: []const ClientIdType,
                     vols: @TypeOf(query_vols),
                 ) void {
                     tree.findExtOverlapsWorker(scratch_a, scratch_b, range_iter, shared_buf, ids, vols);
@@ -319,7 +365,7 @@ pub fn SquareTree(
             const num_parts = query_part_sizer.getParts(query_ids.len, self.max_async_workers);
             const num_workers = query_part_sizer.getWorkers(num_parts, self.max_async_workers);
             var range_iter = para.AtomicRangeIter.init(0, query_ids.len, num_parts);
-            var shared_buf = para.SharedBuffer([2]ClientId).init(overlap_buf);
+            var shared_buf = para.SharedBuffer([2]ClientIdType).init(overlap_buf);
             var group: Io.Group = .init;
             errdefer group.cancel(io);
             for (0..num_workers) |i| {
@@ -343,11 +389,11 @@ pub fn SquareTree(
         /// Single-threaded (no io dependency) but not thread-safe (writes to scratch bufs).
         pub fn findExtOverlapsSingle(
             self: *Self,
-            overlap_buf: [][2]ClientId,
-            query_id: ClientId,
+            overlap_buf: [][2]ClientIdType,
+            query_id: ClientIdType,
             query_vol: anytype,
-        ) Error![][2]ClientId {
-            const query_ids = [_]ClientId{query_id};
+        ) Error![][2]ClientIdType {
+            const query_ids = [_]ClientIdType{query_id};
             const query_vols = [_]@TypeOf(query_vol){query_vol};
             return self.findExtOverlaps(overlap_buf, &query_ids, &query_vols);
         }
@@ -357,12 +403,12 @@ pub fn SquareTree(
             scratch_a: []CurveIndex,
             scratch_b: []CurveIndex,
             range_iter: *para.AtomicRangeIter,
-            shared_buf: *para.SharedBuffer([2]ClientId),
-            query_ids: []const ClientId,
+            shared_buf: *para.SharedBuffer([2]ClientIdType),
+            query_ids: []const ClientIdType,
             query_vols: anytype,
         ) void {
-            var pair_buf: [query_worker_buf_pair_len][2]ClientId = undefined;
-            var work_list = std.ArrayList([2]ClientId).initBuffer(&pair_buf);
+            var pair_buf: [query_worker_buf_pair_len][2]ClientIdType = undefined;
+            var work_list = std.ArrayList([2]ClientIdType).initBuffer(&pair_buf);
             while (range_iter.next()) |range| {
                 for (query_ids[range.start..range.end], query_vols[range.start..range.end]) |id, v| {
                     self.findOverlapsBfs(shared_buf, &work_list, scratch_a, scratch_b, id, v, 0, 0);
@@ -374,10 +420,10 @@ pub fn SquareTree(
         /// Returns ids for every pair of stored volumes that overlap with each other.
         /// Requires `updateBounds` to have been called since the last `addVolume`.
         /// Single-threaded (no io dependency) but not thread-safe (writes to scratch bufs).
-        pub fn findSelfOverlaps(self: *Self, overlap_buf: [][2]ClientId) Error![][2]ClientId {
+        pub fn findSelfOverlaps(self: *Self, overlap_buf: [][2]ClientIdType) Error![][2]ClientIdType {
             if (!self.bounds_valid) return error.BoundsNotUpdated;
             var range_iter = para.AtomicRangeIter.init(0, self.num_volumes, 1);
-            var shared_buf = para.SharedBuffer([2]ClientId).init(overlap_buf);
+            var shared_buf = para.SharedBuffer([2]ClientIdType).init(overlap_buf);
             self.findSelfOverlapWorker(
                 self.scratch_a[0..num_leaves],
                 self.scratch_b[0..num_leaves],
@@ -393,15 +439,15 @@ pub fn SquareTree(
         pub fn findSelfOverlapsParallel(
             self: *Self,
             io: Io,
-            overlap_buf: [][2]ClientId,
-        ) ![][2]ClientId {
+            overlap_buf: [][2]ClientIdType,
+        ) ![][2]ClientIdType {
             if (!self.bounds_valid) return error.BoundsNotUpdated;
             const num_volumes = self.num_volumes;
             if (num_volumes == 0) return overlap_buf[0..0];
             const num_parts = query_part_sizer.getParts(num_volumes, self.max_async_workers);
             const num_workers = query_part_sizer.getWorkers(num_parts, self.max_async_workers);
             var range_iter = para.AtomicRangeIter.init(0, num_volumes, num_parts);
-            var shared_buf = para.SharedBuffer([2]ClientId).init(overlap_buf);
+            var shared_buf = para.SharedBuffer([2]ClientIdType).init(overlap_buf);
             var group: Io.Group = .init;
             errdefer group.cancel(io);
             for (0..num_workers) |i| {
@@ -422,11 +468,11 @@ pub fn SquareTree(
             scratch_a: []CurveIndex,
             scratch_b: []CurveIndex,
             range_iter: *para.AtomicRangeIter,
-            shared_buf: *para.SharedBuffer([2]ClientId),
+            shared_buf: *para.SharedBuffer([2]ClientIdType),
         ) void {
             // results copied to a small buffer on the stack and flushed to the shared buffer as needed
-            var work_buf: [query_worker_buf_pair_len][2]ClientId = undefined;
-            var work_list = std.ArrayList([2]ClientId).initBuffer(&work_buf);
+            var work_buf: [query_worker_buf_pair_len][2]ClientIdType = undefined;
+            var work_list = std.ArrayList([2]ClientIdType).initBuffer(&work_buf);
             while (range_iter.next()) |range| {
                 if (range.start >= range.end) continue;
                 var leaf_cursor = self.flatIndexToLeafIndex(range.start);
@@ -447,6 +493,66 @@ pub fn SquareTree(
             shared_buf.appendSlice(work_list.items);
         }
 
+        /// Performs a BFS for stored volumes that overlap with the provided query volume.
+        fn findOverlapsBfs(
+            self: *const Self,
+            shared_buf: *para.SharedBuffer([2]ClientIdType),
+            work_list: *std.ArrayList([2]ClientIdType),
+            slice_a: []CurveIndex,
+            slice_b: []CurveIndex,
+            query_id: ClientIdType,
+            query_vol: anytype,
+            start_leaf: CurveIndex,
+            start_vol_index: DataIndex,
+        ) void {
+            // search through higher-level nodes first
+            const query_aabb: Box2f = query_vol.getBoundingBox();
+            var search_list = std.ArrayList(CurveIndex).initBuffer(slice_a);
+            if (compressed) { // check the neighbouring level 0 nodes only
+                const n_box: Box2f = .{
+                    .min = query_aabb.min - self.max_half_extent,
+                    .max = query_aabb.max + self.max_half_extent,
+                };
+                self.indexer.getTopLevelIndexesForBox(&search_list, n_box, start_leaf);
+            } else { // check all level 0 nodes
+                const pred_0 = IndexerType.getLeafPredecessor(start_leaf, 0);
+                for (pred_0..nodes_in_level[0]) |k| search_list.appendAssumeCapacity(@intCast(k));
+            }
+            var next_list = std.ArrayList(CurveIndex).initBuffer(slice_b);
+            for (0..depth - 1) |lvl| {
+                const pred_next: usize = IndexerType.getLeafPredecessor(start_leaf, @truncate(lvl + 1));
+                for (search_list.items) |i| {
+                    const node_vol = self.node_bvs[lvl][i];
+                    if (!vol.checkVolumesOverlap(query_aabb, node_vol)) continue;
+                    const first_child: usize = IndexerType.getFirstChild(i);
+                    const start = @max(pred_next, first_child);
+                    const end = first_child + IndexerType.num_children;
+                    for (start..end) |k| next_list.appendAssumeCapacity(@intCast(k));
+                }
+                // Swap the buffers
+                const tmp = search_list;
+                search_list = next_list;
+                next_list = tmp;
+                next_list.clearRetainingCapacity();
+            }
+            // check the surviving leaf nodes for overlaps
+            for (search_list.items) |i| {
+                const leaf_vol = self.node_bvs[depth - 1][i];
+                if (!vol.checkVolumesOverlap(query_aabb, leaf_vol)) continue;
+                const items = self.getLeafVolumes(i);
+                const ids = self.getLeafIds(i);
+                const start = if (i == start_leaf) start_vol_index else 0;
+                for (items[start..], ids[start..]) |stored_vol, id| {
+                    if (!vol.checkVolumesOverlap(query_vol, stored_vol)) continue;
+                    if (work_list.items.len == query_worker_buf_pair_len) { // publish a full batch
+                        shared_buf.appendSlice(work_list.items);
+                        work_list.clearRetainingCapacity();
+                    }
+                    work_list.appendAssumeCapacity(.{ query_id, id });
+                }
+            }
+        }
+
         /// Finds stored volumes nearest to each query point, nearest-first.
         /// Search stops when k volumes are found, or there are no more candidates within `max_dist`.
         /// Requires `updateBounds` to have been called since the last `addVolume`.
@@ -454,7 +560,7 @@ pub fn SquareTree(
             self: *const Self,
             bufs: [][]Neighbour,
             points: []const Vec2f,
-            excl_ids: []const ?ClientId,
+            excl_ids: []const ?ClientIdType,
             k: u16,
             max_dist: f32,
         ) Error![][]Neighbour {
@@ -475,7 +581,7 @@ pub fn SquareTree(
             io: Io,
             bufs: [][]Neighbour,
             points: []const Vec2f,
-            excl_ids: []const ?ClientId,
+            excl_ids: []const ?ClientIdType,
             k: u16,
             max_dist: f32,
         ) ![][]Neighbour {
@@ -503,7 +609,7 @@ pub fn SquareTree(
             self: *const Self,
             buf: []Neighbour,
             point: Vec2f,
-            excl_id: ?ClientId,
+            excl_id: ?ClientIdType,
             k: u16,
             max_dist: f32,
         ) Error![]Neighbour {
@@ -515,7 +621,7 @@ pub fn SquareTree(
             self: *const Self,
             bufs: [][]Neighbour,
             points: []const Vec2f,
-            excl_ids: []const ?ClientId,
+            excl_ids: []const ?ClientIdType,
             k: u16,
             max_dist: f32,
             range_iter: *para.AtomicRangeIter,
@@ -533,144 +639,12 @@ pub fn SquareTree(
             }
         }
 
-        /// Draws a tree's grid subdivisions, cell labels, and stored volumes to an svg file.
-        /// Accepts a pointer to any tree exposing the same public interface as `SquareTree`.
-        /// TODO: move outside square_tree.zig (make a helper in a future tree interface).
-        pub fn drawTreeSvg(
-            self: *Self,
-            allocator: Allocator,
-            show_client_ids: bool,
-        ) !draw.SvgCanvas {
-            const bgs: draw.Style = .{
-                .fill_active = true,
-                .fill_hsl = .{ 0, 0, 95 },
-                .stroke_active = false,
-            };
-            var canvas = try draw.SvgCanvas.init(allocator, self.indexer.min_pt, self.indexer.max_pt, bgs);
-            errdefer canvas.deinit(allocator);
-            const extent = self.indexer.max_pt - self.indexer.min_pt;
-            const scale = @reduce(.Max, extent) / 800.0;
-            // draw grid subdivisions + cell labels, finest level first
-            var palette = try draw.RandomHslPalette.init(allocator, depth, 100);
-            defer palette.deinit(allocator);
-            var label_buff: [16]u8 = undefined;
-            for (calc.getReversedRange(Indexer.LevelIndex, depth)) |lvl| {
-                const style: draw.Style = .{
-                    .stroke_hsl = palette.hsl_colours[lvl],
-                    .stroke_width = scale * calc.asf32(depth - lvl),
-                };
-                const font_size: f32 = scale * (4.0 + 8.0 * calc.asf32(depth - lvl));
-                for (0..nodes_in_level[lvl]) |i| {
-                    const node_index: CurveIndex = @intCast(i);
-                    const cell = self.indexer.getCellBoundaryAtLevel(lvl, node_index);
-                    const label_width = (math.log2_int(usize, nodes_in_level[lvl]) + 3) / 4;
-                    const label = try std.fmt.bufPrint(&label_buff, "{X:0>[1]}", .{ node_index, label_width });
-                    try canvas.addRectangle(allocator, cell.min, cell.max, style);
-                    try canvas.addText(allocator, cell.getCentre(), label, font_size, style.stroke_hsl);
-                }
-            }
-            // find every client id that participates in an overlap
-            const volumes = self.leaf_data[0..self.num_volumes];
-            const ids = self.leaf_ids[0..self.num_volumes];
-            const overlap_buff = try allocator.alloc([2]ClientId, 16 * volumes.len);
-            defer allocator.free(overlap_buff);
-            const pairs = try self.findSelfOverlaps(overlap_buff);
-            var overlapping = std.AutoHashMap(ClientId, void).init(allocator);
-            defer overlapping.deinit();
-            for (pairs) |pair| {
-                try overlapping.put(pair[0], {});
-                try overlapping.put(pair[1], {});
-            }
-            //draw the stored volumes, colouring overlapping ones differently
-            const default_style: draw.Style = .{ .stroke_hsl = .{ 0, 0, 30 }, .stroke_width = 1.5 * scale };
-            const overlap_style: draw.Style = .{ .stroke_hsl = .{ 120, 80, 30 }, .stroke_width = 2.0 * scale };
-            const id_label_hsl: [3]u9 = .{ 0, 0, 0 };
-            const id_label_font_size: f32 = scale * 10.0;
-            var id_buff: [20]u8 = undefined;
-            for (volumes, ids) |v, id| {
-                const style = if (overlapping.contains(id)) overlap_style else default_style;
-                if (Volume == Ball2f) {
-                    try canvas.addCircle(allocator, v.centre, v.radius, style);
-                } else if (Volume == Box2f) {
-                    try canvas.addRectangle(allocator, v.min, v.max, style);
-                } else if (Volume == OrientedBox2f) {
-                    var corners = v.getCorners();
-                    try canvas.addPolygon(allocator, &corners, style);
-                } else {
-                    @compileError("drawTreeSvg: unsupported volume type " ++ @typeName(Volume));
-                }
-                if (show_client_ids) {
-                    const label = try std.fmt.bufPrint(&id_buff, "{d}", .{id});
-                    try canvas.addText(allocator, v.getCentre(), label, id_label_font_size, id_label_hsl);
-                }
-            }
-            return canvas;
-        }
-
-        /// Gets the volumes stored in the specified leaf node, in insertion order.
-        fn getLeafVolumes(self: *const Self, leaf_num: CurveIndex) []const Volume {
-            const start = self.leaf_starts[leaf_num];
-            return self.leaf_data[start..self.leaf_starts[@as(usize, leaf_num) + 1]];
-        }
-
-        /// Gets the client ids stored in the specified leaf node, in the same order as getLeafVolumes.
-        fn getLeafIds(self: *const Self, leaf_num: CurveIndex) []const ClientId {
-            const start = self.leaf_starts[leaf_num];
-            return self.leaf_ids[start..self.leaf_starts[@as(usize, leaf_num) + 1]];
-        }
-
-        /// Indexes, sorts, and stores staged volumes into leaf_data in leaf_starts.
-        fn storeStagedVolumes(self: *Self) !void {
-            // TODO: try replace the below with radix-sort to allow for parallel execution
-            // Something like this:
-            // 1. compute leaf_index for every volume
-            // 2. coarse radix partition by high bits of leaf_index
-            // 3. process independent coarse buckets
-            //    - count leaves
-            //    - prefix locally
-            //    - scatter
-            // 4. Build global leaf_starts
-            // see https://www.interviewcake.com/concept/python/radix-sort
-            const num_vols = self.num_volumes;
-            if (num_vols > self.leaf_data.len) return Error.TreeCapacityExceeded;
-            var max_half_extent: Vec2f = @splat(0);
-            for (self.staged_data[0..num_vols], 0..) |v, i| {
-                const leaf_index = self.indexer.getLeafIndexForPoint(v.getCentre());
-                self.staged_indexes[i] = leaf_index;
-                const data_index = self.leaf_counts[leaf_index];
-                if (data_index == math.maxInt(DataIndex)) return Error.LeafCapacityExceeded;
-                self.leaf_counts[leaf_index] = data_index + 1;
-                if (compressed) {
-                    const bb = v.getBoundingBox();
-                    const he = calc.scaledVec(0.5, bb.max - bb.min);
-                    max_half_extent = @max(max_half_extent, he);
-                }
-            }
-            self.max_half_extent = max_half_extent;
-            self.leaf_starts[0] = 0;
-            var offset: StartIndex = 0;
-            for (self.leaf_counts, 1..) |count, i| {
-                self.leaf_starts[i] = offset;
-                offset += count;
-            }
-            for (
-                self.staged_data[0..num_vols],
-                self.staged_ids[0..num_vols],
-                self.staged_indexes[0..num_vols],
-            ) |v, id, leaf_index| {
-                const cursor = &self.leaf_starts[@as(usize, leaf_index) + 1];
-                self.leaf_data[cursor.*] = v;
-                self.leaf_ids[cursor.*] = id;
-                cursor.* += 1;
-            }
-        }
-
         /// Finds the nearest neighbours for a single point; skips bounds check.
         fn neighboursForPoint(
             self: *const Self,
             buf: []Neighbour,
             point: Vec2f,
-            exclude_id: ?ClientId,
+            exclude_id: ?ClientIdType,
             k: u16,
             max_dist: f32,
         ) Error![]Neighbour {
@@ -682,7 +656,7 @@ pub fn SquareTree(
             var next_min_dist: f32 = 0;
             var scratch_buf: [max_ring_size]CurveIndex = undefined;
             while (next_min_dist < max_dist and (len < k or next_min_dist < furthest_dist)) {
-                const leaves = try Indexer.getLeafCellNeighbours(&scratch_buf, leaf_index, iter);
+                const leaves = try IndexerType.getLeafCellNeighbours(&scratch_buf, leaf_index, iter);
                 for (leaves) |i| {
                     const vols = self.getLeafVolumes(i);
                     for (vols, self.getLeafIds(i)) |v, client_id| {
@@ -705,6 +679,18 @@ pub fn SquareTree(
                 iter += 1;
             }
             return buf[0..len];
+        }
+
+        /// Gets the client ids stored in the specified leaf node in insertion order.
+        fn getLeafIds(self: *const Self, leaf_num: CurveIndex) []const ClientIdType {
+            const start = self.leaf_starts[leaf_num];
+            return self.leaf_ids[start..self.leaf_starts[@as(usize, leaf_num) + 1]];
+        }
+
+        /// Gets the volumes stored in the specified leaf node in insertion order.
+        fn getLeafVolumes(self: *const Self, leaf_num: CurveIndex) []const VolumeType {
+            const start = self.leaf_starts[leaf_num];
+            return self.leaf_data[start..self.leaf_starts[@as(usize, leaf_num) + 1]];
         }
 
         /// Does a binary search to find the leaf associated with a flat index (for leaf_data).
@@ -731,66 +717,6 @@ pub fn SquareTree(
                 .leaf = @intCast(leaf_idx_ptr.*),
                 .offset = @intCast(flat_index - self.leaf_starts[leaf_idx_ptr.*]),
             };
-        }
-
-        /// Performs a BFS for stored volumes that overlap with the provided query volume.
-        fn findOverlapsBfs(
-            self: *const Self,
-            shared_buf: *para.SharedBuffer([2]ClientId),
-            work_list: *std.ArrayList([2]ClientId),
-            slice_a: []CurveIndex,
-            slice_b: []CurveIndex,
-            query_id: ClientId,
-            query_vol: anytype,
-            start_leaf: CurveIndex,
-            start_vol_index: DataIndex,
-        ) void {
-            // search through higher-level nodes first
-            const query_aabb: Box2f = query_vol.getBoundingBox();
-            var search_list = std.ArrayList(CurveIndex).initBuffer(slice_a);
-            if (compressed) { // check the neighbouring level 0 nodes only
-                const n_box: Box2f = .{
-                    .min = query_aabb.min - self.max_half_extent,
-                    .max = query_aabb.max + self.max_half_extent,
-                };
-                self.indexer.getTopLevelIndexesForBox(&search_list, n_box, start_leaf);
-            } else { // check all level 0 nodes
-                const pred_0 = Indexer.getLeafPredecessor(start_leaf, 0);
-                for (pred_0..nodes_in_level[0]) |k| search_list.appendAssumeCapacity(@intCast(k));
-            }
-            var next_list = std.ArrayList(CurveIndex).initBuffer(slice_b);
-            for (0..depth - 1) |lvl| {
-                const pred_next: usize = Indexer.getLeafPredecessor(start_leaf, @truncate(lvl + 1));
-                for (search_list.items) |i| {
-                    const node_vol = self.node_bvs[lvl][i];
-                    if (!vol.checkVolumesOverlap(query_aabb, node_vol)) continue;
-                    const first_child: usize = Indexer.getFirstChild(i);
-                    const start = @max(pred_next, first_child);
-                    const end = first_child + Indexer.num_children;
-                    for (start..end) |k| next_list.appendAssumeCapacity(@intCast(k));
-                }
-                // Swap the buffers
-                const tmp = search_list;
-                search_list = next_list;
-                next_list = tmp;
-                next_list.clearRetainingCapacity();
-            }
-            // check the surviving leaf nodes for overlaps
-            for (search_list.items) |i| {
-                const leaf_vol = self.node_bvs[depth - 1][i];
-                if (!vol.checkVolumesOverlap(query_aabb, leaf_vol)) continue;
-                const items = self.getLeafVolumes(i);
-                const ids = self.getLeafIds(i);
-                const start = if (i == start_leaf) start_vol_index else 0;
-                for (items[start..], ids[start..]) |stored_vol, id| {
-                    if (!vol.checkVolumesOverlap(query_vol, stored_vol)) continue;
-                    if (work_list.items.len == query_worker_buf_pair_len) { // publish a full batch
-                        shared_buf.appendSlice(work_list.items);
-                        work_list.clearRetainingCapacity();
-                    }
-                    work_list.appendAssumeCapacity(.{ query_id, id });
-                }
-            }
         }
     };
 }
@@ -938,7 +864,7 @@ test "tree occupancy counts are accurate" {
     var balls: [test_capacity]Ball2f = undefined;
     pos_dist.fillVec2f(prng.random(), centres[0..]);
     for (0..test_capacity) |i| balls[i] = .{ .centre = centres[i], .radius = 0.1 };
-    const indexes = calc.getRange(Tree.ClientIdType, test_capacity);
+    const indexes = calc.getRange(Tree.ClientId, test_capacity);
     try tree.addVolumes(&balls, &indexes);
     try tree.updateBounds();
 

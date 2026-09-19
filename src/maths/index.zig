@@ -120,7 +120,6 @@ pub fn Indexer2f(
             b: Box2f,
             start_leaf: CurveIndex,
         ) void {
-            // TODO: revisit this, I am sure there's a better way that doesn't need indexing
             const leaf_coord_shift = axis_bitshift * regular_levels; // to account for compression
             const lo = self.getTopLevelCoordsForPoint(b.min);
             const hi = self.getTopLevelCoordsForPoint(b.max);

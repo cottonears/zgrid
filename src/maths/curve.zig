@@ -1,8 +1,10 @@
+//! Defines the recursive space-filling curves use for indexing.
+// TODO: find a way to improve compile times (generate full-size LUTs and save in a separate file?)
 const std = @import("std");
 const math = std.math;
 
+// TODO: add support for Hilbert curves!
 pub const Curve = enum {
-    // TODO: add support for Hilbert curves!
     // the standard Lebesgue / Morton Z-shaped curve produced by bit-interleaving
     Morton2,
     Morton4,
@@ -366,7 +368,7 @@ const testing = std.testing;
 const test_alloc = std.testing.allocator;
 var test_dir = "test-out";
 
-test "check tile to fill" {
+test "check tile to fill's map are invertible" {
     const curves = [_]Curve{
         .Morton4,
         .Morton8,

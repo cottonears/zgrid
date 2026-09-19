@@ -1,3 +1,4 @@
+//! Helper module for generating random data.
 const std = @import("std");
 const calc = @import("calc.zig");
 const volume = @import("volume.zig");

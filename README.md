@@ -7,9 +7,9 @@ Zgrid is a library for 2D spatial queries that aims to do be three things:
 
 Currently zgrid only offers one data structure, `SquareTree`, for queries in 2D scenes.
 This data structure is designed for realtime applications where objects are densely packed (e.g., life / particle simulators, RPG-/RTS-style games). 
-With appropriate parameters, it should scale well for 100 - 20,000 objects.
+With appropriate parameters, it should scale well for 20,000+ objects (more with multi-threading enabled).
 A square tree won't be suitable for every application, it is likely to be much slower than alternatives for sparse scenes.
-More data structures are planned in future, see the [Roadmap](#roadmap).
+Different trees are planned in future, see the [Roadmap](#roadmap).
 
 ## Prerequisites
 Zig 0.16.
@@ -84,6 +84,8 @@ There is a companion project [`zgrid-demo`](https://github.com/cottonears/zgrid-
 
 ## Volumes
 Several types of volumes supported, describe them and contrast storable vs non-storable.
+(add images!)
+
 
 ## SquareTree
 

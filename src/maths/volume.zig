@@ -1,4 +1,4 @@
-//! This module contains definitions of volume types and related functions.
+//! Definitions of core volume types and related functions.
 const std = @import("std");
 const calc = @import("calc.zig");
 const math = std.math;
