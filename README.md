@@ -1,15 +1,13 @@
 # Zgrid
 
-Zgrid is a library for 2D spatial queries that aims to do be three things:
-- Simple
-- Lightweight
-- Efficient
+Zgrid is a library for 2D spatial queries that strives to be simple, lightweight, and efficient.
+It supports the following primitives: axis-aligned bounding-boxes (AABBs), oriented bounding-boxes (OBBs), balls, and lines.
 
 Currently zgrid only offers one data structure, `SquareTree`, for queries in 2D scenes.
-This data structure is designed for realtime applications where objects are densely packed (e.g., life / particle simulators, RPG-/RTS-style games). 
-With appropriate parameters, it should scale well for 20,000+ objects (more with multi-threading enabled).
-A square tree won't be suitable for every application, it is likely to be much slower than alternatives for sparse scenes.
-Different trees are planned in future, see the [Roadmap](#roadmap).
+A square tree is ideal for for realtime applications where objects are densely packed (e.g., life / particle simulators, RPG-/RTS-style games).
+It should scale well for scenes with 10,000+ objects (more with multi-threading).
+A square tree won't be suitable for every application, it is likely to be slower than alternatives in sparse scenes.
+Other types of trees may be implemented in future, see the [Roadmap](#roadmap).
 
 ## Prerequisites
 Zig 0.16.
@@ -20,7 +18,7 @@ Use `zig fetch` to import the zgrid package into your project:
 ``` sh
 zig fetch --save git+https://github.com/cottonears/zgrid
 ```
-Then register it as a dependency in your `build.zig.zon` file:
+Then add it as a dependency step in your `build.zig` file:
 ``` zig
 const zgrid_dep = b.dependency("zgrid", .{
     .target = target,
@@ -29,52 +27,80 @@ const zgrid_dep = b.dependency("zgrid", .{
 exe.root_module.addImport("zgrid", zgrid_dep.module("zgrid"));
 ```
 
-## Simple working example
+## Basic working example
 
-This shows how you can create a square tree, populate it, and perform simple spatial queries:
+The code below shows how you can create a square tree, populate it, and perform spatial queries:
 
 ``` zig
 const std = @import("std");
 const zgrid = @import("zgrid");
-const Ball2f = zgrid.volume.Ball2f;
-const Box2f = zgrid.volume.Box2f;
-const Indexer = zgrid.index.Indexer2f(4, 2, 1, .Zigzag);
-const SquareTree = zgrid.square_tree.SquareTree(Indexer, Box2f, u16);
+const Ball2f = zgrid.Ball2f;
+const Box2f = zgrid.Box2f;
+const Line2f = zgrid.Line2f;
+const Vec2f = zgrid.Vec2f; // i.e., @Vector(2, f32)
+const SquareTree = zgrid.SquareTree(
+    zgrid.Indexer2f(.Zigzag16, 1), // indexes 16 x 16 cells (quite coarse)
+    Box2f, // primitive type to store in the tree
+    u16, // used to identify your data
+);
+const Neighbour = SquareTree.Neighbour; // id type (u16) depends on above
 
 pub fn main(init: std.process.Init) !void {
     const arena: std.mem.Allocator = init.arena.allocator();
-    const min = @Vector(2, f32){ 0, 0 };
-    const max = @Vector(2, f32){ 16, 10 };
-    var tree = try SquareTree.init(arena, min, max, 50_000);
+
+    const min = Vec2f{ 0, 0 };
+    const max = Vec2f{ 16, 12 };
+    var tree = try SquareTree.init(arena, min, max, 64_000, 0);
     defer tree.deinit(arena);
 
-    var entity_aabbs: [3]Box2f = .{
-        .{ .min = .{ 1.0, 1.0 }, .max = .{ 2.0, 3.0 } },
-        .{ .min = .{ 1.5, 0.0 }, .max = .{ 1.8, 4.0 } },
-        .{ .min = .{ 1.2, 2.0 }, .max = .{ 1.3, 2.5 } },
+    var pairs_buf: [1024][2]u16 = undefined; // used to record id-pairs in overlap queries
+    var near_buf: [256]Neighbour = undefined; // used record neighbour info
+    var entity_ids: [4]u16 = .{ 7, 25, 42, 1337 };
+    var entity_aabbs: [4]Box2f = .{
+        .{ .min = .{ 1.0, 1.0 }, .max = .{ 3.0, 5.0 } },
+        .{ .min = .{ 8.5, 5.0 }, .max = .{ 9.5, 6.0 } },
+        .{ .min = .{ 0.9, 4.8 }, .max = .{ 8.3, 5.9 } },
+        .{ .min = .{ 5.3, 9.0 }, .max = .{ 17.0, 11.2 } },
     };
-    var entity_ids: [3]u16 = .{ 0, 1, 2 };
+    var found: usize = 0;
 
     // square trees can be rebuilt cheaply: clear and update every frame
     tree.clear();
     try tree.addVolumes(entity_aabbs[0..], entity_ids[0..]);
-    tree.build();
-
-    // check for overlaps with an external volume with findOverlaps
-    var query_buf: [3]u16 = undefined; // NOTE: slice of u16s
-    const query_ball = Ball2f{ .centre = .{ 4, 4 }, .radius = 3 };
-    const query_ids = try tree.findOverlaps(&query_buf, query_ball);
-    for (query_ids) |id| {
-        std.debug.print("Query ball overlaps with {d}.\n", .{id});
-    }
+    try tree.build();
 
     // check for overlaps betweeen stored objects with findSelfOverlaps
-    var pairs_buf: [6][2]u16 = undefined; // NOTE: slice of u16 pairs
-    const entity_pairs = try tree.findSelfOverlaps(&pairs_buf);
+    const entity_pairs = try tree.findSelfOverlaps(pairs_buf[found..]);
     for (entity_pairs) |p| {
         std.debug.print("Entity overlap between {d} and {d}.\n", .{ p[0], p[1] });
+    }
+    found += entity_pairs.len;
 
-    // TODO: line segment + kNN example
+    // check for overlaps with several external volumes with findExtOverlaps
+    const line_ids: [2]u16 = .{ 100, 200 };
+    const lines = [2]Line2f{
+        .{ .start = .{ 0, 0 }, .end = .{ 8, 5 } },
+        .{ .start = .{ 8, 5 }, .end = .{ 16, 0 } },
+    };
+    const line_pairs = try tree.findExtOverlaps(pairs_buf[found..], &line_ids, &lines);
+    for (line_pairs) |p| {
+        std.debug.print("Line {d} overlaps with {d}.\n", .{ p[0], p[1] });
+    }
+    found += line_pairs.len;
+
+    // another external volume query: single volume method
+    const query_ball = Ball2f{ .centre = .{ 4, 4 }, .radius = 3 };
+    const ball_pairs = try tree.findExtOverlapsSingle(pairs_buf[found..], 0, query_ball);
+    for (ball_pairs) |p| {
+        std.debug.print("Query ball overlaps: {any}.\n", .{p});
+    }
+    found += line_pairs.len;
+
+    // find the closest 2 volues to a single test point
+    const test_pt = Vec2f{ 8, 6 };
+    const nearby = try tree.findNeighboursSingle(&near_buf, test_pt, null, 3, 9.0);
+    for (nearby) |n| {
+        std.debug.print("Neighbour found: id = {d}, dist = {d:.3}.\n", .{ n.id, n.dist });
     }
 }
 ```
@@ -92,20 +118,26 @@ Several types of volumes supported, describe them and contrast storable vs non-s
 ![SquareTree-Ball](docs/img/square_tree_ball.svg)
 
 A square tree is a uniform grid where each top-level (level 0) cell has a a bounding volume hierachy (BVH) tree beneath it.
-Adding the BVH allows for more flexible queries, and better performance if some cells become densely packed.
-The bottom (leaf) level grid is formed by dividing a square region of the 2D plane into smaller cells of equal size.
-When volumes are added to a square tree, they are 'binned' into one of these leaf cells based on their centre position.
-After all relevant volumes have been binned into their leaf cells, an axis-aligned bounding box (AABB) is fit around the volumes stored in each cell.
-Then, a second level of AABBs is fit around a number of neighbouring cells' bounding boxes.
-This is repeated iteratively until the top layer of AABBs (at level 0) has been created.
-For efficiency, the hierachy is built using recursive indexing; see [Indexing](#indexing) for more details.
+Adding the BVH allows for more flexible queries and better performance if some cells become densely packed.
+Cells are subdivided into 2x2 or 4x4 children depending on the chosen indexer.
+The number of levels in the tree is also determined by the choice of indexer; see [Indexing](#indexing) for more details).
+
+When volumes have been added to a square tree and `build` is called, the volumes are 'binned' into a leaf cells based on their centre positions.
+Volumes whose centre is outside the tree's bounds will be binned into a cell on the edge of the tree (using clamp()). 
+Bounding boxes are fit around all binned volumes on the leaf level, then combined to create one bounding box for each leaf node.
+Following this, another layer of bounding boxes is created for the level above this, ... and so on.
+Bounding volumes for each node may extend well outside the central cell for that node, and overlap with other bounding volumes on the same level. 
+No attempt is made to prevent this: simplicity and speed of indexing + rebuilding are prioritised.
 
 The square tree data structure uses a single slice to store all volumes (from all leaf cells) in a one large block of memory.
 This has the following benefits:
-- The tree allocates heap memory exactly once (on init). Adding volumes to the tree after initialisation will never trigger a heap allocation, but it may result in a `CapacityExceeded` error (if the initial capacity has been exhausted).
-- The share of the overall tree's capacity used by each leaf cell is flexible and will adapt as required to the scene. This results in lower memory usage (+ safer runtime behaviour) than a naiive approach where each cell is backed by a separate slice.
+- The tree allocates heap memory exactly once (on init). Adding volumes to the tree after initialisation will never trigger a heap allocation, but it may result in a `TreeCapacityExceeded` error (if the initial capacity has been exhausted).
 - Volumes within the same leaf are stored in contiguous memory; this is important for performance.
-Neighbouring leaves' volumes are also frequently adjacent in memory, though this doesn't seem to affect query speed at present.
+
+The proportion of the tree's backing slice allocated to each leaf cell is variable and will adapt as required at runtime.
+This is achieved by using offsets calculated in a counting sort during the `build` step to compactly partition the slice.
+This results in lower memory usage (+ safer runtime behaviour) than a naiive approach where each cell is backed by a separate slice.
+
 
 (A paragraph about querying the tree and BFS/DTT here)
 
@@ -128,8 +160,8 @@ Neighbouring leaves' volumes are also frequently adjacent in memory, though this
 - [X] Add findExtOverlapsSingle.
 - [X] Improve indexing performance.
 - [X] Parallelise build (with a radix sort?).
-- [ ] Implement `getExpandedVolume(V, vol, velocity, time_step)` (makes conservative BVs for moving bodies); required to prevent tunnelling.
 - [ ] Move benchmark to a separate repo to reduce compile times.
+- [ ] Implement `getExpandedVolume(V, vol, velocity, time_step)` (makes conservative BVs for moving bodies); required to prevent tunnelling.
 - [ ] Revamp this readme.
 - [ ] Set up CI (`zig build test` on push).
 
