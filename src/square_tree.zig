@@ -26,7 +26,6 @@ pub fn SquareTree(
         max_half_extent: Vec2f = @splat(0), // largest half-extent of any stored volume
         bounds_valid: bool = false, // false if bounds need to be updated
         node_bvs: [depth][]Box2f, // BVs for all nodes
-        leaf_counts: []DataIndex, // the number of volumes within each leaf node
         leaf_data: []Volume, // all volumes, sorted by leaf index
         leaf_ids: []ClientId, // client ids for leaf_data, in the same order
         leaf_starts: []StartIndex, // CSR offsets: leaf i owns leaf_data[starts[i]..starts[i + 1]]
@@ -94,9 +93,6 @@ pub fn SquareTree(
             const leaf_starts = try allocator.alloc(StartIndex, num_leaves + 1);
             errdefer allocator.free(leaf_starts);
             @memset(leaf_starts, 0);
-            const leaf_counts = try allocator.alloc(DataIndex, num_leaves);
-            errdefer allocator.free(leaf_counts);
-            @memset(leaf_counts, 0);
             const staged_data = try allocator.alloc(Volume, max_capacity);
             errdefer allocator.free(staged_data);
             const staged_ids = try allocator.alloc(ClientId, max_capacity);
@@ -123,7 +119,6 @@ pub fn SquareTree(
                 .leaf_data = leaf_data,
                 .leaf_ids = leaf_ids,
                 .leaf_starts = leaf_starts,
-                .leaf_counts = leaf_counts,
                 .staged_data = staged_data,
                 .staged_ids = staged_ids,
                 .staged_indexes = staged_indexes,
@@ -140,7 +135,6 @@ pub fn SquareTree(
             allocator.free(self.staged_indexes);
             allocator.free(self.staged_ids);
             allocator.free(self.staged_data);
-            allocator.free(self.leaf_counts);
             allocator.free(self.leaf_starts);
             allocator.free(self.leaf_ids);
             allocator.free(self.leaf_data);
@@ -167,7 +161,6 @@ pub fn SquareTree(
         pub fn build(self: *Self) !void {
             var idx_iter = AtomicRangeIter.init(0, self.num_volumes, 1);
             self.indexStagedVolumes(&idx_iter, &self.max_half_extent);
-            @memset(self.leaf_counts, 0);
             try self.countSortStagedVolumes();
             var range_iter = AtomicRangeIter.init(0, nodes_in_level[0], 1);
             self.updateSubtreeBvsWorker(0, &range_iter);
@@ -181,20 +174,18 @@ pub fn SquareTree(
             var group: Io.Group = .init;
             errdefer group.cancel(io);
             // first index points and update max-half-extent (if compressed)
-            const index_workers = @min(max_idx_workers, @max(1, self.max_async_workers - 1));
+            const index_workers = @min(max_idx_workers, self.max_async_workers);
             var worker_mhes: [max_idx_workers]Vec2f = undefined;
             var count_iter = AtomicRangeIter.init(0, self.num_volumes, index_workers);
             for (0..index_workers) |i| {
                 const args = .{ self, &count_iter, &worker_mhes[i] };
                 group.async(io, indexStagedVolumes, args);
             }
-            @memset(self.leaf_counts, 0);
             try group.await(io);
             var mhe: Vec2f = @splat(0);
             for (0..index_workers) |i| mhe = @max(mhe, worker_mhes[i]);
             self.max_half_extent = mhe;
             // then count-sort
-            @memset(self.leaf_counts, 0);
             try self.countSortStagedVolumes();
             const target_parts = update_bv_parts_per_worker * @as(usize, self.max_async_workers);
             const parts = @min(bv_top_nodes, math.ceilPowerOfTwoAssert(usize, target_parts));
@@ -235,17 +226,36 @@ pub fn SquareTree(
         /// counts, sorts, and stores staged volumes into leaf_data in leaf_starts.
         fn countSortStagedVolumes(self: *Self) !void {
             const num_vols = self.num_volumes;
-            for (self.staged_indexes[0..num_vols]) |i| {
-                const data_index = self.leaf_counts[i];
-                if (data_index == math.maxInt(DataIndex)) return Error.LeafCapacityExceeded;
-                self.leaf_counts[i] = data_index + 1;
+            if (comptime num_leaves < 65_536) { // small tree: store counts in temp stack array
+                var leaf_counts: [num_leaves]DataIndex = undefined;
+                @memset(&leaf_counts, 0);
+                for (self.staged_indexes[0..num_vols]) |i| {
+                    const data_index = leaf_counts[i];
+                    if (data_index == math.maxInt(DataIndex)) return Error.LeafCapacityExceeded;
+                    leaf_counts[i] = data_index + 1;
+                }
+                self.leaf_starts[0] = 0;
+                var offset: StartIndex = 0;
+                for (leaf_counts, 1..) |count, i| {
+                    self.leaf_starts[i] = offset;
+                    offset += count;
+                }
+            } else { // large tree: store counts in self.leaf_starts before offset pass
+                @memset(self.leaf_starts, 0);
+                for (self.staged_indexes[0..num_vols]) |i| {
+                    const count = self.leaf_starts[i + 1];
+                    if (count == math.maxInt(DataIndex)) return Error.LeafCapacityExceeded;
+                    self.leaf_starts[i + 1] = count + 1;
+                }
+                self.leaf_starts[0] = 0;
+                var offset: StartIndex = 0;
+                for (0..self.leaf_starts.len) |i| {
+                    const prev_count = self.leaf_starts[i];
+                    self.leaf_starts[i] = offset;
+                    offset += prev_count;
+                }
             }
-            self.leaf_starts[0] = 0;
-            var offset: StartIndex = 0;
-            for (self.leaf_counts, 1..) |count, i| {
-                self.leaf_starts[i] = offset;
-                offset += count;
-            }
+            // scatter staged vols + ids to their final position
             for (
                 self.staged_data[0..num_vols],
                 self.staged_ids[0..num_vols],
@@ -302,10 +312,13 @@ pub fn SquareTree(
         }
 
         /// Diagnostic: the largest number of volumes staged in any single leaf.
-        pub fn getMaxLeafOccupancy(self: *const Self) !usize {
+        pub fn getMaxLeafOccupancy(self: *const Self) !StartIndex {
             if (!self.bounds_valid) return Error.TreeNotBuilt;
-            var max_count: DataIndex = 0;
-            for (self.leaf_counts) |count| max_count = @max(max_count, count);
+            var max_count: StartIndex = 0;
+            for (1..self.leaf_starts.len) |i| {
+                const count = self.leaf_starts[i] - self.leaf_starts[i - 1];
+                max_count = @max(max_count, count);
+            }
             return max_count;
         }
 
@@ -315,10 +328,8 @@ pub fn SquareTree(
             if (!self.bounds_valid) return Error.TreeNotBuilt;
             std.debug.assert(lvl < depth);
             const succ_start = Indexer.getFirstLeafSuccessor(@truncate(lvl), node);
-            const succ_end = succ_start + Indexer.getNumberLeafSuccessors(@truncate(lvl));
-            var total: usize = 0;
-            for (succ_start..succ_end) |i| total += self.leaf_counts[i];
-            return total;
+            const succ_end: usize = succ_start + Indexer.getNumberLeafSuccessors(@truncate(lvl));
+            return self.leaf_starts[succ_end] - self.leaf_starts[succ_start];
         }
 
         /// Relocates the tree to a new position.
@@ -701,13 +712,15 @@ pub fn SquareTree(
         /// Gets the client ids stored in the specified leaf node in insertion order.
         fn getLeafIds(self: *const Self, leaf_num: CurveIndex) []const ClientId {
             const start = self.leaf_starts[leaf_num];
-            return self.leaf_ids[start..self.leaf_starts[@as(usize, leaf_num) + 1]];
+            const end = self.leaf_starts[@as(usize, leaf_num) + 1];
+            return self.leaf_ids[start..end];
         }
 
         /// Gets the volumes stored in the specified leaf node in insertion order.
         fn getLeafVolumes(self: *const Self, leaf_num: CurveIndex) []const Volume {
             const start = self.leaf_starts[leaf_num];
-            return self.leaf_data[start..self.leaf_starts[@as(usize, leaf_num) + 1]];
+            const end = self.leaf_starts[@as(usize, leaf_num) + 1];
+            return self.leaf_data[start..end];
         }
 
         /// Does a binary search to find the leaf associated with a flat index (for leaf_data).
