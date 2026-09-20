@@ -14,7 +14,6 @@ pub const Ball2f = volume.Ball2f;
 pub const Box2f = volume.Box2f;
 pub const Line2f = volume.Line2f;
 pub const OrientedBox2f = volume.OrientedBox2f;
-pub const Neighbour = square_tree.Neighbour;
 pub const Indexer2f = index.Indexer2f;
 pub const SquareTree = square_tree.SquareTree;
 pub const SvgCanvas = draw.SvgCanvas;
