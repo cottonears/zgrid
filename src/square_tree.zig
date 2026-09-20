@@ -15,6 +15,7 @@ const Box2f = vol.Box2f;
 const OrientedBox2f = vol.OrientedBox2f;
 
 /// A data structure that stores volumes + client IDs within an indexed region.
+/// Uses a recursive indexer to build hierachies of bounding volumes above leaf nodes.
 pub fn SquareTree(
     comptime IndexerType: type, // Indexer used to structure tree.
     comptime VolumeType: type, // Type of volumes stored in leaf nodes.
@@ -36,10 +37,11 @@ pub fn SquareTree(
         scratch_b: []CurveIndex, // scratch buffer B - for BFS search
         max_async_workers: u16,
 
-        /// Errors exposed through public methods:
         pub const Error = error{
             InputLengthMismatch,
             BufferCapacityExceeded,
+            CannotRelocateOccupiedTree,
+            CapacityTooLarge,
             LeafCapacityExceeded,
             TreeCapacityExceeded,
             TreeNotBuilt,
@@ -57,22 +59,23 @@ pub fn SquareTree(
         const StartIndex = u24; // Offset into leaf_data/leaf_ids
         const VolIndex = struct { leaf: CurveIndex, offset: DataIndex }; // locates a stored volume
         const max_ring_size: usize = 4 * math.sqrt(num_leaves); // limits neighbourhood query growth
-        // Tunable params below: current config is for a modern CPU (tested on Ryzen 9700X)
+        const bv_top_lvl: u4 = blk: { // highest level where update computes bvs in parallel
+            var lvl: u4 = depth - 1;
+            while (lvl > 0 and nodes_in_level[lvl - 1] >= update_bv_min_part_nodes) lvl -= 1;
+            break :blk lvl;
+        };
+
+        // Tunable params below: current config tested on Ryzen 9700X
+        const max_idx_workers = 4;
         const query_part_sizer: para.PartitionSizer = .{
             .min_tasks_per_part = 4,
             .min_parts_per_worker = 1,
             .max_parts_per_worker = 32,
         };
         const query_worker_buf_bytes = 16 * 1024; // stack-allocated bytes for each worker
-        const query_worker_buf_pair_len = query_worker_buf_bytes / @sizeOf(ClientId);
+        const query_worker_buf_pair_len = query_worker_buf_bytes / @sizeOf([2]ClientId);
         const update_bv_min_part_nodes = 64; // fewest nodes worth splitting across workers
         const update_bv_parts_per_worker = 4;
-        const bv_top_lvl: u4 = blk: { // highest level where update computes bvs in parallel
-            var lvl: u4 = depth - 1;
-            while (lvl > 0 and nodes_in_level[lvl - 1] >= update_bv_min_part_nodes) lvl -= 1;
-            break :blk lvl;
-        };
-        const bv_top_nodes = nodes_in_level[bv_top_lvl];
         const Self = @This();
 
         pub fn init(
@@ -83,7 +86,7 @@ pub fn SquareTree(
             max_async_workers: u16, // limits the number of workers (0 defaults to cpu_count - 1)
         ) !Self {
             if (max_capacity > math.maxInt(StartIndex)) {
-                return error.CapacityExceedsMaxStartIndex;
+                return Error.CapacityTooLarge;
             }
             const indexer = try Indexer.init(bound_1, bound_2);
             const leaf_data = try allocator.alloc(Volume, max_capacity);
@@ -107,8 +110,8 @@ pub fn SquareTree(
                 levels_allocated += 1;
             }
             // scratch buffer scales with number of workers (will be divided in parallel methods)
-            const t: u16 = @truncate(@max(1, (try std.Thread.getCpuCount()) -| 1));
-            const max_workers = if (max_async_workers > 0) @min(max_async_workers, t) else t;
+            const cpus: u16 = @truncate(@max(1, (try std.Thread.getCpuCount()) -| 1));
+            const max_workers = if (max_async_workers > 0) @min(max_async_workers, cpus) else cpus;
             const scratch_buf_a = try allocator.alloc(CurveIndex, max_workers * num_leaves);
             errdefer allocator.free(scratch_buf_a);
             const scratch_buf_b = try allocator.alloc(CurveIndex, max_workers * num_leaves);
@@ -149,7 +152,7 @@ pub fn SquareTree(
         ) Error!void {
             const n = self.num_volumes;
             if (n + vols.len > self.staged_data.len) return Error.TreeCapacityExceeded;
-            if (vols.len != client_ids.len) return error.InputLengthMismatch;
+            if (vols.len != client_ids.len) return Error.InputLengthMismatch;
             @memcpy(self.staged_data[n..][0..vols.len], vols);
             @memcpy(self.staged_ids[n..][0..client_ids.len], client_ids);
             self.num_volumes += vols.len;
@@ -170,15 +173,14 @@ pub fn SquareTree(
         /// Sorts staged volumes into their final positions, then updates all nodes' BVs.
         /// Does work in parallel if the io implementation supports it; not thread-safe.
         pub fn buildParallel(self: *Self, io: Io) !void {
-            const max_idx_workers = 8;
             var group: Io.Group = .init;
             errdefer group.cancel(io);
             // first index points and update max-half-extent (if compressed)
             const index_workers = @min(max_idx_workers, self.max_async_workers);
             var worker_mhes: [max_idx_workers]Vec2f = undefined;
-            var count_iter = AtomicRangeIter.init(0, self.num_volumes, index_workers);
+            var idx_iter = AtomicRangeIter.init(0, self.num_volumes, index_workers);
             for (0..index_workers) |i| {
-                const args = .{ self, &count_iter, &worker_mhes[i] };
+                const args = .{ self, &idx_iter, &worker_mhes[i] };
                 group.async(io, indexStagedVolumes, args);
             }
             try group.await(io);
@@ -187,6 +189,7 @@ pub fn SquareTree(
             self.max_half_extent = mhe;
             // then count-sort
             try self.countSortStagedVolumes();
+            const bv_top_nodes = nodes_in_level[bv_top_lvl];
             const target_parts = update_bv_parts_per_worker * @as(usize, self.max_async_workers);
             const parts = @min(bv_top_nodes, math.ceilPowerOfTwoAssert(usize, target_parts));
             const workers = @min(self.max_async_workers, parts);
@@ -206,9 +209,9 @@ pub fn SquareTree(
         }
 
         // Indexes a range of staged volumes and computes their max half extent
-        fn indexStagedVolumes(self: *Self, staging_iter: *AtomicRangeIter, max_half_ext: *Vec2f) void {
+        fn indexStagedVolumes(self: *Self, range_iter: *AtomicRangeIter, max_half_ext: *Vec2f) void {
             var mhe: Vec2f = @splat(0);
-            while (staging_iter.next()) |r| {
+            while (range_iter.next()) |r| {
                 for (r.start..r.end) |i| {
                     const v = self.staged_data[i];
                     const leaf_index = self.indexer.getLeafIndexForPoint(v.getCentre());
@@ -337,6 +340,7 @@ pub fn SquareTree(
         pub fn relocate(self: *Self, new_min: Vec2f, new_max: Vec2f) !void {
             if (self.num_volumes > 0) return error.CannotRelocateOccupiedTree;
             self.indexer = try Indexer.init(new_min, new_max);
+            self.bounds_valid = false;
         }
 
         /// Returns id pairs for stored volumes that overlap with the provided query volumes.
@@ -592,9 +596,9 @@ pub fn SquareTree(
             k: u16,
             max_dist: f32,
         ) Error![][]Neighbour {
-            if (bufs.len != points.len or bufs.len != excl_ids.len) return error.InputLengthMismatch;
-            if (!self.bounds_valid) return error.TreeNotBuilt;
-            for (bufs) |buf| if (k > buf.len) return error.BufferCapacityExceeded;
+            if (bufs.len != points.len or bufs.len != excl_ids.len) return Error.InputLengthMismatch;
+            if (!self.bounds_valid) return Error.TreeNotBuilt;
+            for (bufs) |buf| if (k > buf.len) return Error.BufferCapacityExceeded;
             var range_iter = AtomicRangeIter.init(0, bufs.len, 1);
             self.findNeighboursWorker(bufs, points, excl_ids, k, max_dist, &range_iter);
             return bufs;
@@ -613,9 +617,9 @@ pub fn SquareTree(
             k: u16,
             max_dist: f32,
         ) ![][]Neighbour {
-            if (bufs.len != points.len or bufs.len != excl_ids.len) return error.InputLengthMismatch;
-            if (!self.bounds_valid) return error.TreeNotBuilt;
-            for (bufs) |buf| if (k > buf.len) return error.BufferCapacityExceeded;
+            if (bufs.len != points.len or bufs.len != excl_ids.len) return Error.InputLengthMismatch;
+            if (!self.bounds_valid) return Error.TreeNotBuilt;
+            for (bufs) |buf| if (k > buf.len) return Error.BufferCapacityExceeded;
             if (bufs.len == 0) return bufs;
             const num_parts = query_part_sizer.getParts(bufs.len, self.max_async_workers);
             const num_workers = query_part_sizer.getWorkers(num_parts, self.max_async_workers);
@@ -676,19 +680,19 @@ pub fn SquareTree(
             k: u16,
             max_dist: f32,
         ) Error![]Neighbour {
-            if (k > buf.len) return error.BufferCapacityExceeded;
+            if (k > buf.len) return Error.BufferCapacityExceeded;
             const leaf_index = self.indexer.getLeafIndexForPoint(point);
-            var len: usize = 0;
-            var iter: u8 = 0;
             var furthest_dist: f32 = 0;
             var next_min_dist: f32 = 0;
+            var len: usize = 0;
+            var iter: u8 = 0;
             var scratch_buf: [max_ring_size]CurveIndex = undefined;
             while (next_min_dist < max_dist and (len < k or next_min_dist < furthest_dist)) {
                 const leaves = try Indexer.getLeafCellNeighbours(&scratch_buf, leaf_index, iter);
                 for (leaves) |i| {
                     const vols = self.getLeafVolumes(i);
                     for (vols, self.getLeafIds(i)) |v, client_id| {
-                        if (exclude_id != null and exclude_id.? == client_id) continue;
+                        if (exclude_id == client_id) continue;
                         const dist_squared = calc.squaredSum(v.getCentre() - point);
                         const threshold = if (len < k) max_dist else furthest_dist;
                         if (dist_squared >= threshold * threshold) continue;
@@ -703,6 +707,7 @@ pub fn SquareTree(
                         furthest_dist = buf[len - 1].dist;
                     }
                 }
+                if (iter == Indexer.coord_max) break;
                 next_min_dist = calc.asf32(iter) * self.indexer.cell_size;
                 iter += 1;
             }
@@ -724,28 +729,25 @@ pub fn SquareTree(
         }
 
         /// Does a binary search to find the leaf associated with a flat index (for leaf_data).
-        fn flatIndexToLeafIndex(self: *const Self, flat_index: usize) CurveIndex {
+        fn flatIndexToLeafIndex(self: *const Self, data_index: usize) CurveIndex {
             var lo: usize = 0;
             var hi: usize = num_leaves;
             while (lo + 1 < hi) {
                 const mid = lo + (hi - lo) / 2;
-                if (self.leaf_starts[mid] <= flat_index) lo = mid else hi = mid;
+                if (self.leaf_starts[mid] <= data_index) lo = mid else hi = mid;
             }
             return @intCast(lo);
         }
 
-        /// Returns the after-last index (in leaf_data) for the identified leaf node.
-        fn leafEnd(self: *const Self, leaf_index: CurveIndex) usize {
-            return self.leaf_starts[@as(usize, leaf_index) + 1];
-        }
-
         /// Increments the provided leaf index until it points to the leaf_data that includes flat_index.
-        fn nextVolIndex(self: *const Self, leaf_idx_ptr: *CurveIndex, flat_index: usize) VolIndex {
-            std.debug.assert(flat_index < self.num_volumes); // else the walk runs off the end
-            while (flat_index >= self.leafEnd(leaf_idx_ptr.*)) leaf_idx_ptr.* += 1;
+        fn nextVolIndex(self: *const Self, leaf_idx_ptr: *CurveIndex, data_index: usize) VolIndex {
+            std.debug.assert(data_index < self.num_volumes); // else the walk runs off the end
+            while (data_index >= self.leaf_starts[@as(usize, leaf_idx_ptr.*) + 1]) {
+                leaf_idx_ptr.* += 1;
+            }
             return .{
-                .leaf = @intCast(leaf_idx_ptr.*),
-                .offset = @intCast(flat_index - self.leaf_starts[leaf_idx_ptr.*]),
+                .leaf = leaf_idx_ptr.*,
+                .offset = @intCast(data_index - self.leaf_starts[leaf_idx_ptr.*]),
             };
         }
     };
@@ -804,7 +806,7 @@ test "hex tree overlap ball" {
     const indexes = calc.getRange(u16, balls.len);
     try tree.addVolumes(balls[0..], &indexes);
     try tree.buildParallel(testing.io);
-    var pairs_buff: [16][2]u16 = undefined;
+    var pairs_buf: [16][2]u16 = undefined;
     const query_ids = [_]u16{ 4, 5, 6 };
     const query_regions = [_]Ball2f{
         .{ .centre = .{ 0.9, 0.5 }, .radius = 0.1 },
@@ -814,7 +816,7 @@ test "hex tree overlap ball" {
     // query balls 4 and 5 overlap nothing; 6 overlaps all 3 stored balls
     const ext_overlaps = try tree.findExtOverlapsParallel(
         testing.io,
-        &pairs_buff,
+        &pairs_buf,
         &query_ids,
         &query_regions,
     );
@@ -822,7 +824,7 @@ test "hex tree overlap ball" {
     calc.sortPairsLexicographic(u16, ext_overlaps);
     try testing.expectEqualSlices([2]u16, &expected_ext, ext_overlaps);
     // a overlaps b, and b overlaps c, but a does not overlap c.
-    const self_overlaps = try tree.findSelfOverlapsParallel(testing.io, &pairs_buff);
+    const self_overlaps = try tree.findSelfOverlapsParallel(testing.io, &pairs_buf);
     calc.sortPairsLexicographic(u16, self_overlaps);
     const expected_self = [_][2]u16{ .{ 0, 1 }, .{ 1, 2 } };
     try testing.expectEqualSlices([2]u16, &expected_self, self_overlaps);
@@ -865,13 +867,13 @@ test "hex tree overlap box" {
         .{ .min = .{ 0.0, 0.3 }, .max = .{ 0.4, 0.7 } },
     };
     // query boxes 4 and 5 overlap nothing; 6 overlaps all 3 stored boxes
-    var id_buff: [16][2]u16 = undefined;
-    const ext_overlaps = try tree.findExtOverlaps(&id_buff, &query_ids, &query_regions);
+    var id_buf: [16][2]u16 = undefined;
+    const ext_overlaps = try tree.findExtOverlaps(&id_buf, &query_ids, &query_regions);
     const expected_ext = [_][2]u16{ .{ 0, 6 }, .{ 1, 6 }, .{ 2, 6 } };
     calc.sortPairsLexicographic(u16, ext_overlaps);
     try testing.expectEqualSlices([2]u16, &expected_ext, ext_overlaps);
     // a overlaps b, and b overlaps c, but a does not overlap c.
-    const self_overlaps = try tree.findSelfOverlapsParallel(testing.io, &id_buff);
+    const self_overlaps = try tree.findSelfOverlapsParallel(testing.io, &id_buf);
     calc.sortPairsLexicographic(u16, self_overlaps);
     const expected_self = [_][2]u16{ .{ 0, 1 }, .{ 1, 2 } };
     try testing.expectEqualSlices([2]u16, &expected_self, self_overlaps);

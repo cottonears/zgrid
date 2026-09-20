@@ -521,14 +521,14 @@ pub fn DataTable(
                 try string_list.append(allocator, '|');
             }
             const row_titles: [5][]const u8 = .{ " min ", " q1  ", " q2  ", " q3  ", " max " };
-            var stat_buff: [32]u8 = undefined;
+            var stat_buf: [32]u8 = undefined;
             for (0..5) |i| {
                 try string_list.appendSlice(allocator, "\n|");
                 try string_list.appendSlice(allocator, row_titles[i]);
                 try string_list.append(allocator, '|');
                 inline for (0..num_cols) |j| {
                     const cell_val = col_stats[j][i];
-                    const stat_str = try std.fmt.bufPrint(&stat_buff, formats[j], .{cell_val});
+                    const stat_str = try std.fmt.bufPrint(&stat_buf, formats[j], .{cell_val});
                     try string_list.appendSlice(allocator, stat_str);
                     try string_list.append(allocator, '|');
                 }

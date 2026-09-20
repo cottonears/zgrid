@@ -1,3 +1,4 @@
+//! Types and helpers functions for partitioning / synchronising multi-threaded work.
 const std = @import("std");
 const Group = std.Io.Group;
 const AtomicUsize = std.atomic.Value(usize);
@@ -138,10 +139,10 @@ test "test range iterator" {
 }
 
 test "test write to shared buffer" {
-    const SCRATCH_LEN = 64;
+    const scratch_len = 64;
     const Work = struct {
         pub fn doWork(iter: *AtomicRangeIter, data: []usize, out: *SharedBuffer(usize)) void {
-            var scratch_buf: [SCRATCH_LEN]usize = undefined;
+            var scratch_buf: [scratch_len]usize = undefined;
             var scratch_list = std.ArrayList(usize).initBuffer(&scratch_buf);
             while (iter.next()) |r| {
                 for (r.start..r.end) |i| {

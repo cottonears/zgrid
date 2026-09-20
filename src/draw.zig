@@ -1,3 +1,4 @@
+//! Helper module for producing visuals for testing / debugging.
 const std = @import("std");
 const mem = std.mem;
 const Vec2f = @Vector(2, f32);
@@ -73,8 +74,8 @@ pub const SvgCanvas = struct {
         end: Vec2f,
         style: Style,
     ) !void {
-        var sbuff: [256]u8 = undefined;
-        const style_str = try style.getElementString(&sbuff);
+        var buf: [256]u8 = undefined;
+        const style_str = try style.getElementString(&buf);
         const class = try self.getClass(allocator, style_str);
         const element_str = try std.fmt.allocPrint(
             allocator,
@@ -91,14 +92,14 @@ pub const SvgCanvas = struct {
         points: []Vec2f,
         style: Style,
     ) !void {
-        var sbuff: [128]u8 = undefined;
-        const style_str = try style.getElementString(&sbuff);
+        var sbuf: [128]u8 = undefined;
+        const style_str = try style.getElementString(&sbuf);
         const class = try self.getClass(allocator, style_str);
         var pts_char_list = try std.ArrayList(u8).initCapacity(allocator, points.len * 12);
         defer pts_char_list.deinit(allocator);
         for (points) |p| {
-            var buff: [32]u8 = undefined;
-            const slice = buff[0..];
+            var buf: [32]u8 = undefined;
+            const slice = buf[0..];
             const str = try std.fmt.bufPrint(slice, "{d:.3},{d:.3} ", .{ p[0], p[1] });
             try pts_char_list.appendSlice(allocator, str);
         }
@@ -118,8 +119,8 @@ pub const SvgCanvas = struct {
         end: Vec2f,
         style: Style,
     ) !void {
-        var sbuff: [128]u8 = undefined;
-        const style_str = try style.getElementString(&sbuff);
+        var buf: [128]u8 = undefined;
+        const style_str = try style.getElementString(&buf);
         const class = try self.getClass(allocator, style_str);
         const d = end - start;
         const element_str = try std.fmt.allocPrint(
@@ -138,8 +139,8 @@ pub const SvgCanvas = struct {
         radius: f32,
         style: Style,
     ) !void {
-        var sbuff: [128]u8 = undefined;
-        const style_str = try style.getElementString(&sbuff);
+        var buf: [128]u8 = undefined;
+        const style_str = try style.getElementString(&buf);
         const class = try self.getClass(allocator, style_str);
         const element_str = try std.fmt.allocPrint(
             allocator,
@@ -156,14 +157,14 @@ pub const SvgCanvas = struct {
         points: []Vec2f,
         style: Style,
     ) !void {
-        var sbuff: [128]u8 = undefined;
-        const style_str = try style.getElementString(&sbuff);
+        var sbuf: [128]u8 = undefined;
+        const style_str = try style.getElementString(&sbuf);
         const class = try self.getClass(allocator, style_str);
         var pts_char_list = try std.ArrayList(u8).initCapacity(allocator, points.len * 12);
         defer pts_char_list.deinit(allocator);
         for (points) |p| {
-            var buff: [32]u8 = undefined;
-            const slice = buff[0..];
+            var buf: [32]u8 = undefined;
+            const slice = buf[0..];
             const str = try std.fmt.bufPrint(slice, "{d:.3},{d:.3} ", .{ p[0], p[1] });
             try pts_char_list.appendSlice(allocator, str);
         }
@@ -184,9 +185,9 @@ pub const SvgCanvas = struct {
         font_size: f32,
         fill_hsl: [3]u9,
     ) !void {
-        var sbuff: [256]u8 = undefined;
+        var buf: [256]u8 = undefined;
         const style_str = try std.fmt.bufPrint(
-            &sbuff,
+            &buf,
             "fill=\"hsl({d:.0},{d:.0}%,{d:.0}%)\" text-anchor=\"middle\"",
             .{ fill_hsl[0], fill_hsl[1], fill_hsl[2] },
         );
@@ -246,8 +247,8 @@ pub const SvgCanvas = struct {
         }
         var file = try std.Io.Dir.cwd().createFile(io, filename, .{});
         defer file.close(io);
-        var buffer: [4096]u8 = undefined;
-        var buf_writer = file.writer(io, &buffer);
+        var buf: [4096]u8 = undefined;
+        var buf_writer = file.writer(io, &buf);
         var writer = &buf_writer.interface;
         try writer.print("{s}\n{s}\n{s}", .{ html_start, svg_body, html_end });
         try buf_writer.flush();
@@ -265,44 +266,44 @@ pub const Style = struct {
     stroke_opacity: f32 = 1.0,
     stroke_dashed: bool = false,
 
-    pub fn getElementString(style: *const Style, buff_ptr: []u8) ![]u8 {
+    pub fn getElementString(style: *const Style, buf_ptr: []u8) ![]u8 {
         var len: usize = 0;
         if (style.fill_active) {
             len = (try std.fmt.bufPrint(
-                buff_ptr,
+                buf_ptr,
                 "fill=\"hsl({d:.0},{d:.0}%,{d:.0}%)\" ",
                 .{ style.fill_hsl[0], style.fill_hsl[1], style.fill_hsl[2] },
             )).len;
         } else {
             len = (try std.fmt.bufPrint(
-                buff_ptr,
+                buf_ptr,
                 "fill=\"none\" ",
                 .{},
             )).len;
         }
         if (style.stroke_active) {
             len += (try std.fmt.bufPrint(
-                buff_ptr[len..],
+                buf_ptr[len..],
                 "stroke=\"hsl({d:.0},{d:.0}%,{d:.0}%)\" stroke-width=\"{d:.4}\" ",
                 .{ style.stroke_hsl[0], style.stroke_hsl[1], style.stroke_hsl[2], style.stroke_width },
             )).len;
 
             if (style.stroke_opacity < 1.0) {
                 len += (try std.fmt.bufPrint(
-                    buff_ptr[len..],
+                    buf_ptr[len..],
                     "stroke-opacity=\"{d:.4}\" ",
                     .{style.stroke_opacity},
                 )).len;
             }
             if (style.stroke_dashed) {
                 len += (try std.fmt.bufPrint(
-                    buff_ptr[len..],
+                    buf_ptr[len..],
                     "stroke-dasharray=\"{},{}\" ",
                     .{ 2 * style.stroke_width, 2 * style.stroke_width },
                 )).len;
             }
         }
-        return buff_ptr[0..len];
+        return buf_ptr[0..len];
     }
 };
 
@@ -310,6 +311,7 @@ const DEFAULT_HUE_RANGE = [_]u9{ 0, 360 };
 const DEFAULT_SAT_RANGE = [_]u9{ 50, 70 };
 const DEFAULT_LT_RANGE = [_]u9{ 45, 50 };
 
+// TODO: remove this - not very useful
 pub const RandomHslPalette = struct {
     prng: std.Random.DefaultPrng,
     hsl_colours: [][3]u9,

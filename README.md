@@ -61,16 +61,16 @@ pub fn main(init: std.process.Init) !void {
     tree.build();
 
     // check for overlaps with an external volume with findOverlaps
-    var query_buff: [3]u16 = undefined; // NOTE: slice of u16s
+    var query_buf: [3]u16 = undefined; // NOTE: slice of u16s
     const query_ball = Ball2f{ .centre = .{ 4, 4 }, .radius = 3 };
-    const query_ids = try tree.findOverlaps(&query_buff, query_ball);
+    const query_ids = try tree.findOverlaps(&query_buf, query_ball);
     for (query_ids) |id| {
         std.debug.print("Query ball overlaps with {d}.\n", .{id});
     }
 
     // check for overlaps betweeen stored objects with findSelfOverlaps
-    var overlaps_buff: [6][2]u16 = undefined; // NOTE: slice of u16 pairs
-    const entity_pairs = try tree.findSelfOverlaps(&overlaps_buff);
+    var pairs_buf: [6][2]u16 = undefined; // NOTE: slice of u16 pairs
+    const entity_pairs = try tree.findSelfOverlaps(&pairs_buf);
     for (entity_pairs) |p| {
         std.debug.print("Entity overlap between {d} and {d}.\n", .{ p[0], p[1] });
 

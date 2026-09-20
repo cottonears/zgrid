@@ -1,3 +1,4 @@
+//! Spatial indexing and navigation of tree hierarchies using recursive curves.
 const std = @import("std");
 const calc = @import("calc.zig");
 const curve = @import("curve.zig");
@@ -38,15 +39,15 @@ pub fn Indexer2f(
         pub const nodes_in_level = calc.getPow2nSequence(base, top_levels, effective_depth);
         pub const num_children = base * base;
         pub const num_leaves = nodes_in_level[depth - 1];
+        pub const grid_size = Curve.size(curve_type);
+        pub const coord_max: GridIndex = @intCast(grid_size - 1);
         pub const type_label = std.fmt.comptimePrint(
             "Indexer2f({s}, {d})",
             .{ @tagName(curve_type), top_levels },
         );
-        const grid_size = Curve.size(curve_type);
         const lvl_bitshift = math.log2(num_children);
         const axis_bitshift = math.log2(base);
-        const coord_max: GridIndex = @intCast(grid_size - 1);
-        const coord_max_vec2f: Vec2f = @splat(calc.asf32(coord_max));
+        const coord_max_vec: Vec2f = @splat(calc.asf32(coord_max));
         const level_scales = blk: {
             var scales: [depth]f32 = undefined;
             for (&scales, 0..) |*s, lvl| {
@@ -152,11 +153,11 @@ pub fn Indexer2f(
 
         /// Gets the indexes of cells that at are d cells away from a leaf node.
         /// Creates a square-shaped 'ring' around the index at distance n.
-        pub fn getLeafCellNeighbours(buff: []CurveIndex, index: CurveIndex, d: u8) ![]CurveIndex {
+        pub fn getLeafCellNeighbours(buf: []CurveIndex, index: CurveIndex, d: u8) ![]CurveIndex {
             var blen: usize = 0;
             if (d == 0) {
-                buff[0] = index;
-                return buff[0..1];
+                buf[0] = index;
+                return buf[0..1];
             }
             const grid_coords = getGridCoordsForIndex(index);
             const top = grid_coords.row -| d;
@@ -170,11 +171,11 @@ pub fn Indexer2f(
             const v_end: usize = @as(usize, bot) + 1;
             for (v_start..v_end) |i| {
                 if (add_left) {
-                    buff[blen] = curve.getIndex(curve_type, @truncate(i), left);
+                    buf[blen] = curve.getIndex(curve_type, @truncate(i), left);
                     blen += 1;
                 }
                 if (add_right) {
-                    buff[blen] = curve.getIndex(curve_type, @truncate(i), right);
+                    buf[blen] = curve.getIndex(curve_type, @truncate(i), right);
                     blen += 1;
                 }
             }
@@ -185,15 +186,15 @@ pub fn Indexer2f(
             const h_end: usize = if (add_right) right else @as(usize, right) + 1;
             for (h_start..h_end) |j| {
                 if (add_top) {
-                    buff[blen] = curve.getIndex(curve_type, top, @truncate(j));
+                    buf[blen] = curve.getIndex(curve_type, top, @truncate(j));
                     blen += 1;
                 }
                 if (add_bot) {
-                    buff[blen] = curve.getIndex(curve_type, bot, @truncate(j));
+                    buf[blen] = curve.getIndex(curve_type, bot, @truncate(j));
                     blen += 1;
                 }
             }
-            return buff[0..blen];
+            return buf[0..blen];
         }
 
         /// Gets the min corner of the identified cell.
@@ -210,7 +211,7 @@ pub fn Indexer2f(
             const zero_vec = Vec2f{ 0, 0 };
             const offset = point - self.min_pt;
             const offset_scaled = calc.scaledVec(self.inv_cell_size, offset);
-            const offset_clamped = math.clamp(offset_scaled, zero_vec, coord_max_vec2f);
+            const offset_clamped = math.clamp(offset_scaled, zero_vec, coord_max_vec);
             return .{ .row = @trunc(offset_clamped[1]), .col = @trunc(offset_clamped[0]) };
         }
 
@@ -402,12 +403,12 @@ test "check get leaf cell neighbours in centre" {
     for (random_pts) |p| {
         const p_idx = indexer.getLeafIndexForPoint(p);
         const p_gc = indexer.getGridCoordsForPoint(p);
-        var n_buff: [24]Indexer.CurveIndex = undefined;
-        const near_p_0 = try Indexer.getLeafCellNeighbours(&n_buff, p_idx, 0);
+        var buf: [24]Indexer.CurveIndex = undefined;
+        const near_p_0 = try Indexer.getLeafCellNeighbours(&buf, p_idx, 0);
         try testing.expectEqual(1, near_p_0.len);
         try testing.expectEqual(p_idx, near_p_0[0]);
         for (1..4) |n| {
-            const near_p_n = try Indexer.getLeafCellNeighbours(&n_buff, p_idx, @intCast(n));
+            const near_p_n = try Indexer.getLeafCellNeighbours(&buf, p_idx, @intCast(n));
             try testing.expectEqual(8 * n, near_p_n.len);
             for (near_p_n) |i| {
                 const i_gc = Indexer.getGridCoordsForIndex(i);
@@ -424,11 +425,11 @@ test "check get leaf cell neighbours near edge" {
     const p_idx: Indexer.CurveIndex = 0;
     const p_gc = Indexer.getGridCoordsForIndex(p_idx);
     var idx_seen = [_]bool{false} ** Indexer.num_leaves;
-    var n_buff: [Indexer.num_leaves]Indexer.CurveIndex = undefined;
+    var buf: [Indexer.num_leaves]Indexer.CurveIndex = undefined;
     var n: usize = 0;
     // search for successive rings of nearby indexes; iterate to cover the whole grid
     while (n <= Indexer.coord_max) : (n += 1) {
-        const ring = try Indexer.getLeafCellNeighbours(&n_buff, p_idx, @intCast(n));
+        const ring = try Indexer.getLeafCellNeighbours(&buf, p_idx, @intCast(n));
         for (ring) |i| {
             const i_gc = Indexer.getGridCoordsForIndex(i);
             const row_diff = if (i_gc.row > p_gc.row) i_gc.row - p_gc.row else p_gc.row - i_gc.row;

@@ -242,6 +242,41 @@ fn getCoords2Stage(comptime curve: Curve, index: Curve.index(curve)) [2]GridInde
     return .{ row, col };
 }
 
+// NOTE: the below constructs a huge table if used for deep trees.
+// This results in slow compile times (and may add to cache pressure at runtime).
+// Recommend it's only used for computing tables upto 64x64 dimensions.
+// For deeper trees use the 2-stage lookup functions.
+fn getTiledLookup(
+    comptime curve: Curve,
+    comptime Index: type,
+    comptime n: usize,
+) struct { forward: [n][n]Index, reverse: [n * n][2]GridIndex } {
+    @setEvalBranchQuota(200_000);
+    const base = comptime Curve.base(curve);
+    const levels = comptime (math.log2_int(GridIndex, n) / math.log2_int(GridIndex, base));
+    const axis_bitshift = math.log2_int(u8, base);
+    const mask = @as(usize, base) - 1;
+    var forward: [n][n]Index = undefined;
+    var reverse: [n * n][2]GridIndex = undefined;
+    for (0..n) |row| {
+        for (0..n) |col| {
+            var index: Index = 0;
+            inline for (0..levels) |lvl| {
+                const remaining = @as(usize, levels) - lvl - 1;
+                const axis_shift = remaining * axis_bitshift;
+                const lvl_row = (row >> @truncate(axis_shift)) & mask;
+                const lvl_col = (col >> @truncate(axis_shift)) & mask;
+                const lvl_index = getPartialIndex(curve, 1, Index, lvl_row, lvl_col);
+                const index_shift = 2 * remaining * axis_bitshift;
+                index |= lvl_index << @intCast(index_shift);
+            }
+            forward[row][col] = index;
+            reverse[index] = .{ @truncate(row), @truncate(col) };
+        }
+    }
+    return .{ .forward = forward, .reverse = reverse };
+}
+
 // Gets a partial index by applying a lookup table up to 8 bits long.
 fn getPartialIndex(
     comptime curve: Curve,
@@ -271,53 +306,6 @@ fn getPartialIndex(
             else => @compileError("Zigzag lookup only supports 1-2 levels"),
         },
     };
-}
-
-// NOTE: the below constructs a huge table if used for deep trees.
-// This results in slow compile times (and may add to cache pressure at runtime).
-// Recommend it's only used for computing tables upto 64x64 dimensions.
-// For deeper trees use the 2-stage lookup functions.
-fn getTiledLookup(
-    comptime curve: Curve,
-    comptime Index: type,
-    comptime n: usize,
-) struct { forward: [n][n]Index, reverse: [n * n][2]GridIndex } {
-    @setEvalBranchQuota(200_000);
-    const base = comptime Curve.base(curve);
-    const levels = comptime (math.log2_int(GridIndex, n) / math.log2_int(GridIndex, base));
-    const max_levels = 1; // if (base == 2) 4 else 2;
-    const axis_bitshift = math.log2_int(u8, base);
-    const num_chunks: usize = (@as(usize, levels) + max_levels - 1) / max_levels;
-    var forward: [n][n]Index = undefined;
-    var reverse: [n * n][2]GridIndex = undefined;
-    for (0..n) |row| {
-        for (0..n) |col| {
-            var index: Index = 0;
-            inline for (0..num_chunks) |chunk| {
-                const done = chunk * max_levels;
-                const chunk_lvls_usize = @min(max_levels, @as(usize, levels) - done);
-                const chunk_levels: u4 = @intCast(chunk_lvls_usize);
-                const remaining = @as(usize, levels) - done - chunk_lvls_usize;
-                const chunk_bitshift = chunk_lvls_usize * axis_bitshift;
-                const axis_shift = remaining * axis_bitshift;
-                const mask = (@as(usize, 1) << chunk_bitshift) - 1;
-                const lvl_row = (row >> @truncate(axis_shift)) & mask;
-                const lvl_col = (col >> @truncate(axis_shift)) & mask;
-                const lvl_index = getPartialIndex(
-                    curve,
-                    chunk_levels,
-                    Index,
-                    lvl_row,
-                    lvl_col,
-                );
-                const index_shift = 2 * remaining * axis_bitshift;
-                index |= lvl_index << @intCast(index_shift);
-            }
-            forward[row][col] = index;
-            reverse[index] = .{ @truncate(row), @truncate(col) };
-        }
-    }
-    return .{ .forward = forward, .reverse = reverse };
 }
 
 const testing = std.testing;

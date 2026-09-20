@@ -3,15 +3,22 @@ pub const curve = @import("maths/curve.zig");
 pub const index = @import("maths/index.zig");
 pub const rand = @import("maths/rand.zig");
 pub const volume = @import("maths/volume.zig");
+pub const draw = @import("draw.zig");
+pub const parallel = @import("parallel.zig");
 pub const square_tree = @import("square_tree.zig");
+const std = @import("std");
+
+pub const Curve = curve.Curve;
 pub const Ball2f = volume.Ball2f;
 pub const Box2f = volume.Box2f;
-pub const Curve = curve.Curve;
 pub const Line2f = volume.Line2f;
+pub const Vec2f = volume.Vec2f;
 pub const OrientedBox2f = volume.OrientedBox2f;
-pub const Vec2f = calc.Vec2f;
+pub const Indexer2f = index.Indexer2f;
+pub const SquareTree = square_tree.SquareTree;
+pub const SvgCanvas = draw.SvgCanvas;
+pub const SvgStyle = draw.Style;
 
-// TODO: add option to draw grid cell labels + colourise overlap index text
 /// Draws a tree's grid subdivisions, cell labels, and stored volumes to an svg file.
 /// Accepts a pointer to any tree exposing the same public interface as `SquareTree`.
 /// NOTE: tightly coupled to square tree at the moment: will need work when another tree is added.
@@ -20,22 +27,22 @@ pub fn drawTreeSvg(
     tree: *T,
     allocator: std.mem.Allocator,
     show_client_ids: bool,
-) !draw.SvgCanvas {
-    const bgs: draw.Style = .{
+) !SvgCanvas {
+    const bgs: SvgStyle = .{
         .fill_active = true,
         .fill_hsl = .{ 0, 0, 95 },
         .stroke_active = false,
     };
-    var canvas = try draw.SvgCanvas.init(allocator, tree.indexer.min_pt, tree.indexer.max_pt, bgs);
+    var canvas = try SvgCanvas.init(allocator, tree.indexer.min_pt, tree.indexer.max_pt, bgs);
     errdefer canvas.deinit(allocator);
     const extent = tree.indexer.max_pt - tree.indexer.min_pt;
     const scale = @reduce(.Max, extent) / 800.0;
     // draw grid subdivisions + cell labels, finest level first
     var palette = try draw.RandomHslPalette.init(allocator, T.depth + 2, 1);
     defer palette.deinit(allocator);
-    var label_buff: [16]u8 = undefined;
+    var label_buf: [16]u8 = undefined;
     for (calc.getReversedRange(T.Indexer.LevelIndex, T.depth)) |lvl| {
-        const style: draw.Style = .{
+        const style: SvgStyle = .{
             .stroke_hsl = palette.hsl_colours[lvl],
             .stroke_width = scale * calc.asf32(T.depth - lvl),
         };
@@ -43,8 +50,8 @@ pub fn drawTreeSvg(
         for (0..T.nodes_in_level[lvl]) |i| {
             const node_index: T.CurveIndex = @intCast(i);
             const cell = tree.indexer.getCellBoundaryAtLevel(lvl, node_index);
-            const label_width = (math.log2_int(usize, T.nodes_in_level[lvl]) + 3) / 4;
-            const label = try std.fmt.bufPrint(&label_buff, "{X:0>[1]}", .{ node_index, label_width });
+            const label_width = (std.math.log2_int(usize, T.nodes_in_level[lvl]) + 3) / 4;
+            const label = try std.fmt.bufPrint(&label_buf, "{X:0>[1]}", .{ node_index, label_width });
             try canvas.addRectangle(allocator, cell.min, cell.max, style);
             try canvas.addText(allocator, cell.getCentre(), label, font_size, style.stroke_hsl);
         }
@@ -52,9 +59,9 @@ pub fn drawTreeSvg(
     // find every client id that participates in an overlap
     const volumes = tree.leaf_data[0..tree.num_volumes];
     const ids = tree.leaf_ids[0..tree.num_volumes];
-    const overlap_buff = try allocator.alloc([2]T.ClientId, 16 * volumes.len);
-    defer allocator.free(overlap_buff);
-    const pairs = try tree.findSelfOverlaps(overlap_buff);
+    const overlap_buf = try allocator.alloc([2]T.ClientId, 16 * volumes.len);
+    defer allocator.free(overlap_buf);
+    const pairs = try tree.findSelfOverlaps(overlap_buf);
     var overlapping = std.AutoHashMap(T.ClientId, void).init(allocator);
     defer overlapping.deinit();
     for (pairs) |pair| {
@@ -62,11 +69,11 @@ pub fn drawTreeSvg(
         try overlapping.put(pair[1], {});
     }
     //draw the stored volumes, colouring overlapping ones differently
-    const default_style: draw.Style = .{ .stroke_hsl = .{ 0, 0, 30 }, .stroke_width = 1.5 * scale };
-    const overlap_style: draw.Style = .{ .stroke_hsl = .{ 0, 50, 50 }, .stroke_width = 2.0 * scale };
+    const default_style: SvgStyle = .{ .stroke_hsl = .{ 0, 0, 30 }, .stroke_width = 1.5 * scale };
+    const overlap_style: SvgStyle = .{ .stroke_hsl = .{ 0, 50, 50 }, .stroke_width = 2.0 * scale };
     const id_label_hsl: [3]u9 = .{ 0, 0, 0 };
     const id_label_font_size: f32 = scale * 10.0;
-    var id_buff: [20]u8 = undefined;
+    var id_buf: [20]u8 = undefined;
     for (volumes, ids) |v, id| {
         const style = if (overlapping.contains(id)) overlap_style else default_style;
         if (T.Volume == Ball2f) {
@@ -80,7 +87,7 @@ pub fn drawTreeSvg(
             @compileError("drawTreeSvg: unsupported volume type " ++ @typeName(T.Volume));
         }
         if (show_client_ids) {
-            const label = try std.fmt.bufPrint(&id_buff, "{d}", .{id});
+            const label = try std.fmt.bufPrint(&id_buf, "{d}", .{id});
             try canvas.addText(allocator, v.getCentre(), label, id_label_font_size, id_label_hsl);
         }
     }
@@ -90,11 +97,7 @@ pub fn drawTreeSvg(
 // ----------------------------------------------------------------------------
 // Module-level tests that use random volumes and / or write output files.
 // ----------------------------------------------------------------------------
-const std = @import("std");
-const draw = @import("draw.zig");
-const math = std.math;
 const testing = std.testing;
-
 const test_alloc = testing.allocator;
 const test_dir = "test-out";
 const test_num_volumes = 16000;
@@ -105,12 +108,12 @@ const test_space_max = 50;
 
 test "tree self overlaps matches brute force" {
     const Trees = .{
-        square_tree.SquareTree(index.Indexer2f(.Spring16, 1), Ball2f, u16),
-        square_tree.SquareTree(index.Indexer2f(.Zigzag16, 1), Ball2f, u16),
-        square_tree.SquareTree(index.Indexer2f(.Morton16, 1), OrientedBox2f, u16),
-        square_tree.SquareTree(index.Indexer2f(.Spring64, 1), Ball2f, u16),
-        square_tree.SquareTree(index.Indexer2f(.Zigzag64, 1), OrientedBox2f, u16),
-        square_tree.SquareTree(index.Indexer2f(.Morton64, 1), Ball2f, u16),
+        SquareTree(Indexer2f(.Spring16, 1), Ball2f, u16),
+        SquareTree(Indexer2f(.Zigzag16, 1), Ball2f, u16),
+        SquareTree(Indexer2f(.Morton16, 1), OrientedBox2f, u16),
+        SquareTree(Indexer2f(.Spring64, 1), Ball2f, u16),
+        SquareTree(Indexer2f(.Zigzag64, 1), OrientedBox2f, u16),
+        SquareTree(Indexer2f(.Morton64, 1), Ball2f, u16),
     };
     const num_vols = 200;
     const seed = rand.getClockBasedRngSeed(testing.io);
@@ -142,9 +145,9 @@ test "tree self overlaps matches brute force" {
             }
         }
         // check that the pairwise overlap results agree with those returned by the tree's method
-        const found_buff = try test_alloc.alloc([2]u16, num_vols * num_vols);
-        defer test_alloc.free(found_buff);
-        const actual = try tree.findSelfOverlapsParallel(testing.io, found_buff);
+        const found_buf = try test_alloc.alloc([2]u16, num_vols * num_vols);
+        defer test_alloc.free(found_buf);
+        const actual = try tree.findSelfOverlapsParallel(testing.io, found_buf);
         calc.sortPairsLexicographic(u16, expected.items);
         calc.sortPairsLexicographic(u16, actual);
         try testing.expectEqualSlices([2]u16, expected.items, actual);
@@ -156,7 +159,7 @@ test "tree neighbours matches brute force" {
     const seed = rand.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
     errdefer rand.printErrorMessageForRandomSeed(seed);
-    const Tree = square_tree.SquareTree(index.Indexer2f(.Zigzag64, 1), Ball2f, u16);
+    const Tree = SquareTree(index.Indexer2f(.Zigzag64, 1), Ball2f, u16);
     var tree = try Tree.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, num_vols, 0);
     defer tree.deinit(test_alloc);
     var test_vols = try rand.TestVolumes.initRandom(
@@ -178,7 +181,7 @@ test "tree neighbours matches brute force" {
     var points: [num_vols]Vec2f = undefined;
     var excl_ids: [num_vols]?Tree.ClientId = undefined;
     for (boxes, indexes, 0..) |box_a, id_a, i| {
-        var nearest = ([1]Tree.Neighbour{.{ .id = 0, .dist = math.floatMax(f32) }}) ** 3;
+        var nearest = ([1]Tree.Neighbour{.{ .id = 0, .dist = std.math.floatMax(f32) }}) ** 3;
         const a_centre = box_a.getCentre();
         for (boxes, indexes) |box_b, id_b| {
             if (id_a == id_b) continue;
@@ -216,9 +219,9 @@ test "draw trees" {
     // Not an automated test: eyeball the written files to verify
     const Indexer = index.Indexer2f(.Spring16, 1);
     const Trees = .{
-        square_tree.SquareTree(Indexer, Ball2f, u16),
-        square_tree.SquareTree(Indexer, Box2f, u16),
-        square_tree.SquareTree(Indexer, OrientedBox2f, u16),
+        SquareTree(Indexer, Ball2f, u16),
+        SquareTree(Indexer, Box2f, u16),
+        SquareTree(Indexer, OrientedBox2f, u16),
     };
     const num_vols = 32;
     const seed = rand.getClockBasedRngSeed(testing.io);
@@ -257,8 +260,8 @@ test "draw indexer curves" {
         index.Indexer2f(Curve.Spring16, 1),
         index.Indexer2f(Curve.Zigzag16, 1),
     };
-    const bg_style: draw.Style = .{ .fill_active = true, .fill_hsl = .{ 0, 0, 95 } };
-    const line_style: draw.Style = .{ .stroke_width = 2, .stroke_hsl = .{ 90, 60, 40 } };
+    const bg_style: SvgStyle = .{ .fill_active = true, .fill_hsl = .{ 0, 0, 95 } };
+    const line_style: SvgStyle = .{ .stroke_width = 2, .stroke_hsl = .{ 90, 60, 40 } };
     const min_pt = Vec2f{ 0, 0 };
     const max_pt = Vec2f{ 1024, 1024 };
     // draw some pretty pictures of the indexers' curves so they can be eyeballed.
@@ -276,13 +279,13 @@ test "draw indexer curves" {
         var test_canvas = try draw.SvgCanvas.init(test_alloc, min_pt, max_pt, bg_style);
         defer test_canvas.deinit(test_alloc);
         try test_canvas.addPolyline(test_alloc, &pts, line_style);
-        var sbuff: [128]u8 = undefined;
+        var buf: [128]u8 = undefined;
         if (write_line_length) {
-            const length_str = try std.fmt.bufPrint(&sbuff, "length = {d:.1}\n", .{curve_lenth});
+            const length_str = try std.fmt.bufPrint(&buf, "length = {d:.1}\n", .{curve_lenth});
             const text_loc = min_pt + calc.scaledVec(0.5, max_pt - min_pt);
             try test_canvas.addText(test_alloc, text_loc, length_str, 20, .{ 0, 0, 0 });
         }
-        const fpath = try std.fmt.bufPrint(&sbuff, "{s}/{any}.html", .{ test_dir, Indexer });
+        const fpath = try std.fmt.bufPrint(&buf, "{s}/{any}.html", .{ test_dir, Indexer });
         try test_canvas.writeHtml(test_alloc, testing.io, fpath, true);
         // operator should inspect the output: expect("looks good to me")
     }

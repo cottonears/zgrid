@@ -2,8 +2,8 @@
 const std = @import("std");
 const calc = @import("calc.zig");
 const math = std.math;
+pub const Vec2f = @Vector(2, f32);
 const ProbDensityFunc = calc.ProbDensityFunc;
-const Vec2f = calc.Vec2f;
 
 /// Any ball with radius <= 0 is considered empty; choose extreme values to make this obvious.
 pub const empty_ball = Ball2f{
