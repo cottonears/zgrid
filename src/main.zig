@@ -133,8 +133,10 @@ fn benchmarkIndexing(allocator: std.mem.Allocator, io: std.Io) !void {
         index.Indexer2f(.Morton32, 1),
         index.Indexer2f(.Morton64, 1),
         index.Indexer2f(.Morton128, 1),
+        index.Indexer2f(.Zigzag256, 1),
         index.Indexer2f(.Zigzag16, 1),
         index.Indexer2f(.Zigzag64, 1),
+        index.Indexer2f(.Zigzag256, 1),
     };
     const headers: [1][]const u8 = .{" time (ns/pt) "};
     const formats: [1][]const u8 = .{" {d:>12.3} "};
@@ -282,13 +284,14 @@ fn benchmarkSquareTrees(allocator: std.mem.Allocator, io: std.Io) !void {
             .{ random_vols.getVolumes(V).len, V, params_str },
         );
         const RegIndexers = .{
-            index.Indexer2f(.Morton8, 1),
             index.Indexer2f(.Morton16, 1),
             index.Indexer2f(.Morton32, 1),
             index.Indexer2f(.Morton64, 1),
             index.Indexer2f(.Morton128, 1),
+            index.Indexer2f(.Morton256, 1),
             index.Indexer2f(.Zigzag16, 1),
             index.Indexer2f(.Zigzag64, 1),
+            index.Indexer2f(.Zigzag256, 1),
         };
         inline for (RegIndexers) |Indexer| {
             try benchmarkTree(
@@ -309,9 +312,7 @@ fn benchmarkSquareTrees(allocator: std.mem.Allocator, io: std.Io) !void {
         );
         const CompIndexers = .{
             index.Indexer2f(.Morton64, 2),
-            index.Indexer2f(.Morton64, 3),
             index.Indexer2f(.Morton64, 4),
-            index.Indexer2f(.Morton64, 5),
             index.Indexer2f(.Morton64, 6),
             index.Indexer2f(.Zigzag64, 2),
             index.Indexer2f(.Zigzag64, 3),

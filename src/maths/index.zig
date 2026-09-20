@@ -12,7 +12,6 @@ const GridCoords = struct { row: GridIndex, col: GridIndex };
 
 /// Recursively indexes a region on the 2D plane.
 /// Level 0 'compresses' several layers' worth of children to limit traversal depth.
-/// Nodes on subsequent levels each have sub_divs x sub_divs children.
 pub fn Indexer2f(
     comptime curve_type: Curve, // type of space-filling curve used
     comptime top_lvl_compression: u4, // levels folded into level 0; 1 = uncompressed
@@ -40,13 +39,13 @@ pub fn Indexer2f(
         pub const num_children = base * base;
         pub const num_leaves = nodes_in_level[depth - 1];
         pub const type_label = std.fmt.comptimePrint(
-            "Indexer2f[{d} x ({d} + {d}), {s}]",
-            .{ base, top_levels, regular_levels, @tagName(curve_type) },
+            "Indexer2f({s}, {d})",
+            .{ @tagName(curve_type), top_levels },
         );
         const grid_size = Curve.size(curve_type);
         const lvl_bitshift = math.log2(num_children);
         const axis_bitshift = math.log2(base);
-        const coord_max: u16 = @intCast(grid_size - 1);
+        const coord_max: GridIndex = @intCast(grid_size - 1);
         const coord_max_vec2f: Vec2f = @splat(calc.asf32(coord_max));
         const level_scales = blk: {
             var scales: [depth]f32 = undefined;
@@ -59,12 +58,12 @@ pub fn Indexer2f(
 
         /// Gets the position index of the first child node, one level below the parent.
         pub fn getFirstChild(parent_pos: CurveIndex) CurveIndex {
-            return parent_pos <<| lvl_bitshift;
+            return parent_pos << lvl_bitshift;
         }
 
         /// Gets the position index of the first leaf successor of the parent.
         pub fn getFirstLeafSuccessor(lvl: LevelIndex, node: CurveIndex) CurveIndex {
-            return node <<| leafShiftToLevel(lvl);
+            return node << leafShiftToLevel(lvl);
         }
 
         /// Gets the number of leaf successors below a node at the specified level.
@@ -86,7 +85,7 @@ pub fn Indexer2f(
 
         /// Gets the bitshift required to move a leaf index up to the identified level.
         fn leafShiftToLevel(level: LevelIndex) math.Log2Int(CurveIndex) {
-            const lvl_diff = @as(LevelIndex, @truncate(depth - 1)) - level;
+            const lvl_diff = depth - 1 - @as(usize, level);
             return @truncate(lvl_diff * lvl_bitshift);
         }
 
@@ -101,7 +100,7 @@ pub fn Indexer2f(
                 .cell_size = lvl_size,
                 .inv_cell_size = 1.0 / lvl_size,
                 .min_pt = min_pt,
-                .max_pt = max_pt,
+                .max_pt = min_pt + Vec2f{ size, size },
             };
         }
 
@@ -151,22 +150,25 @@ pub fn Indexer2f(
             return .{ .min = min, .max = min + @as(Vec2f, @splat(side_len)) };
         }
 
-        /// Gets the indexes of leaf cells that are n distance (taxi-cab metric) from a leaf node.
-        pub fn getLeafCellNeighbours(buff: []CurveIndex, index: CurveIndex, n: u8) ![]CurveIndex {
+        /// Gets the indexes of cells that at are d cells away from a leaf node.
+        /// Creates a square-shaped 'ring' around the index at distance n.
+        pub fn getLeafCellNeighbours(buff: []CurveIndex, index: CurveIndex, d: u8) ![]CurveIndex {
             var blen: usize = 0;
-            if (n == 0) {
+            if (d == 0) {
                 buff[0] = index;
                 return buff[0..1];
             }
             const grid_coords = getGridCoordsForIndex(index);
-            const top = grid_coords.row -| n;
-            const bot: GridIndex = @min(coord_max, grid_coords.row +| n);
-            const left = grid_coords.col -| n;
-            const right: GridIndex = @min(coord_max, grid_coords.col +| n);
+            const top = grid_coords.row -| d;
+            const bot: GridIndex = @min(coord_max, grid_coords.row +| d);
+            const left = grid_coords.col -| d;
+            const right: GridIndex = @min(coord_max, grid_coords.col +| d);
             // vertical scans
-            const add_left = grid_coords.col - left == n;
-            const add_right = right - grid_coords.col == n;
-            for (top..bot + 1) |i| {
+            const add_left = grid_coords.col - left == d;
+            const add_right = right - grid_coords.col == d;
+            const v_start: usize = top;
+            const v_end: usize = @as(usize, bot) + 1;
+            for (v_start..v_end) |i| {
                 if (add_left) {
                     buff[blen] = curve.getIndex(curve_type, @truncate(i), left);
                     blen += 1;
@@ -177,10 +179,10 @@ pub fn Indexer2f(
                 }
             }
             // horizontal scans
-            const add_top = grid_coords.row - top == n;
-            const add_bot = bot - grid_coords.row == n;
-            const h_start = if (add_left) left + 1 else left;
-            const h_end = if (add_right) right else right + 1;
+            const add_top = grid_coords.row - top == d;
+            const add_bot = bot - grid_coords.row == d;
+            const h_start: usize = if (add_left) @as(usize, left) + 1 else left;
+            const h_end: usize = if (add_right) right else @as(usize, right) + 1;
             for (h_start..h_end) |j| {
                 if (add_top) {
                     buff[blen] = curve.getIndex(curve_type, top, @truncate(j));
@@ -191,9 +193,7 @@ pub fn Indexer2f(
                     blen += 1;
                 }
             }
-            const idx_buff = buff[0..blen];
-            std.sort.pdq(CurveIndex, idx_buff, {}, std.sort.asc(CurveIndex)); // TODO: why???
-            return idx_buff;
+            return buff[0..blen];
         }
 
         /// Gets the min corner of the identified cell.
@@ -369,11 +369,6 @@ test "leaf index round trip" {
         Indexer2f(Curve.Spring16, 1),
         Indexer2f(Curve.Zigzag16, 1),
     };
-    const seed = rand.getClockBasedRngSeed(testing.io);
-    var prng = std.Random.DefaultPrng.init(seed);
-    errdefer rand.printErrorMessageForRandomSeed(seed);
-    var random_pts: [2]Vec2f = undefined;
-    rand.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &random_pts);
     const min_pt = Vec2f{ -5, -5 };
     const max_pt = Vec2f{ 5, 5 };
     // check that every leaf tiles part of the region, and its centre indexes back to it
@@ -425,15 +420,15 @@ test "check get leaf cell neighbours in centre" {
 }
 
 test "check get leaf cell neighbours near edge" {
-    const Indexer = Indexer2f(Curve.Zigzag64, 1);
+    const Indexer = Indexer2f(Curve.Zigzag256, 1);
     const p_idx: Indexer.CurveIndex = 0;
     const p_gc = Indexer.getGridCoordsForIndex(p_idx);
     var idx_seen = [_]bool{false} ** Indexer.num_leaves;
     var n_buff: [Indexer.num_leaves]Indexer.CurveIndex = undefined;
-    var n: u8 = 0;
+    var n: usize = 0;
     // search for successive rings of nearby indexes; iterate to cover the whole grid
     while (n <= Indexer.coord_max) : (n += 1) {
-        const ring = try Indexer.getLeafCellNeighbours(&n_buff, p_idx, n);
+        const ring = try Indexer.getLeafCellNeighbours(&n_buff, p_idx, @intCast(n));
         for (ring) |i| {
             const i_gc = Indexer.getGridCoordsForIndex(i);
             const row_diff = if (i_gc.row > p_gc.row) i_gc.row - p_gc.row else p_gc.row - i_gc.row;
