@@ -54,7 +54,7 @@ pub fn main(init: std.process.Init) !void {
     defer tree.deinit(arena);
 
     var pairs_buf: [1024][2]u16 = undefined; // used to record id-pairs in overlap queries
-    var near_buf: [256]Neighbour = undefined; // used record neighbour info
+    var near_buf: [256]Neighbour = undefined; // records neighbour info (id + dist)
     var entity_ids: [4]u16 = .{ 7, 25, 42, 1337 };
     var entity_aabbs: [4]Box2f = .{
         .{ .min = .{ 1.0, 1.0 }, .max = .{ 3.0, 5.0 } },
