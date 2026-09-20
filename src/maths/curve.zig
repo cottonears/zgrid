@@ -209,12 +209,6 @@ const morton32_inv = morton32.reverse;
 const morton64 = getTiledLookup(.Morton64, u12, 64);
 const morton64_fwd = morton64.forward;
 const morton64_inv = morton64.reverse;
-const morton128 = getTiledLookup(.Morton128, u14, 128);
-const morton128_fwd = morton128.forward;
-const morton128_inv = morton128.reverse;
-const morton256 = getTiledLookup(.Morton256, u16, 256);
-const morton256_fwd = morton256.forward;
-const morton256_inv = morton256.reverse;
 
 const spring4 = getTiledLookup(.Spring4, u4, 4);
 const spring4_fwd = spring4.forward;
@@ -225,9 +219,6 @@ const spring16_inv = spring16.reverse;
 const spring64 = getTiledLookup(.Spring64, u12, 64);
 const spring64_fwd = spring64.forward;
 const spring64_inv = spring64.reverse;
-const spring256 = getTiledLookup(.Spring256, u16, 256);
-const spring256_fwd = spring256.forward;
-const spring256_inv = spring256.reverse;
 
 const zigzag4 = getTiledLookup(.Spring4, u4, 4);
 const zigzag4_fwd = zigzag4.forward;
@@ -238,12 +229,7 @@ const zigzag16_inv = zigzag16.reverse;
 const zigzag64 = getTiledLookup(.Zigzag64, u12, 64);
 const zigzag64_fwd = zigzag64.forward;
 const zigzag64_inv = zigzag64.reverse;
-const zigzag256 = getTiledLookup(.Zigzag256, u16, 256);
-const zigzag256_fwd = zigzag256.forward;
-const zigzag256_inv = zigzag256.reverse;
 
-/// Gets the curve index at the specified grid coords.
-/// Inverse of `getCoords`.
 pub fn getIndex(comptime curve: Curve, row: u16, col: u16) Curve.index(curve) {
     return switch (curve) {
         .Morton2 => morton2_fwd[row][col],
@@ -252,16 +238,13 @@ pub fn getIndex(comptime curve: Curve, row: u16, col: u16) Curve.index(curve) {
         .Morton16 => morton16_fwd[row][col],
         .Morton32 => morton32_fwd[row][col],
         .Morton64 => morton64_fwd[row][col],
-        .Morton128 => morton128_fwd[row][col],
-        .Morton256 => morton256_fwd[row][col],
         .Spring4 => spring4_fwd[row][col],
         .Spring16 => spring16_fwd[row][col],
         .Spring64 => spring64_fwd[row][col],
-        .Spring256 => spring256_fwd[row][col],
         .Zigzag4 => zigzag4_fwd[row][col],
         .Zigzag16 => zigzag16_fwd[row][col],
         .Zigzag64 => zigzag64_fwd[row][col],
-        .Zigzag256 => zigzag256_fwd[row][col],
+        else => getIndex2Stage(curve, row, col),
     };
 }
 
@@ -275,17 +258,46 @@ pub fn getCoords(comptime curve: Curve, index: Curve.index(curve)) [2]u16 {
         .Morton16 => morton16_inv[index],
         .Morton32 => morton32_inv[index],
         .Morton64 => morton64_inv[index],
-        .Morton128 => morton128_inv[index],
-        .Morton256 => morton256_inv[index],
         .Spring4 => spring4_inv[index],
         .Spring16 => spring16_inv[index],
         .Spring64 => spring64_inv[index],
-        .Spring256 => spring256_inv[index],
         .Zigzag4 => zigzag4_inv[index],
         .Zigzag16 => zigzag16_inv[index],
         .Zigzag64 => zigzag64_inv[index],
-        .Zigzag256 => zigzag256_inv[index],
+        else => getCoords2Stage(curve, index),
     };
+}
+
+fn getIndex2Stage(comptime curve: Curve, row: u16, col: u16) Curve.index(curve) {
+    const table = switch (curve) {
+        .Morton32, .Morton64, .Morton128, .Morton256 => morton16_fwd,
+        .Spring64, .Spring256 => spring16_fwd,
+        .Zigzag64, .Zigzag256 => zigzag16_fwd,
+        else => @compileError("2-stage lookup not supported for curve " ++ @tagName(curve)),
+    };
+    const row_hi = (row >> 4) & 0xF;
+    const col_hi = (col >> 4) & 0xF;
+    const curve_hi: Curve.index(curve) = table[row_hi][col_hi];
+    const row_lo = row & 0xF;
+    const col_lo = col & 0xF;
+    const curve_lo: Curve.index(curve) = table[row_lo][col_lo];
+    return (curve_hi << 8) | curve_lo;
+}
+
+fn getCoords2Stage(comptime curve: Curve, index: Curve.index(curve)) [2]u16 {
+    const table = switch (curve) {
+        .Morton32, .Morton64, .Morton128, .Morton256 => morton16_inv,
+        .Spring64, .Spring256 => spring16_inv,
+        .Zigzag64, .Zigzag256 => zigzag16_inv,
+        else => @compileError("2-stage lookup not supported for curve " ++ @tagName(curve)),
+    };
+    const index_lo: u8 = @truncate(index);
+    const index_hi: u8 = @truncate(index >> 8);
+    const coords_lo = table[index_lo];
+    const coords_hi = table[index_hi];
+    const row = @as(u16, coords_lo[0]) | (@as(u16, coords_hi[0]) << 4);
+    const col = @as(u16, coords_lo[1]) | (@as(u16, coords_hi[1]) << 4);
+    return .{ row, col };
 }
 
 // Gets a partial index by applying a lookup table up to 8 bits long.
@@ -319,14 +331,15 @@ fn getPartialIndex(
     };
 }
 
-// TODO: the below will get huge if used for deep trees
-// come up with a way to use to separate small lookups for these at runtime
+// NOTE: the below will get huge if used for deep trees.
+// This results in slow compile times (and may add to cache pressure at runtime).
+// Recommend it's only used for computing tables upto 64x64 dimensions
 fn getTiledLookup(
     comptime curve: Curve,
     comptime Index: type,
     comptime n: usize,
 ) struct { forward: [n][n]Index, reverse: [n * n][2]u16 } {
-    @setEvalBranchQuota(200_000);
+    @setEvalBranchQuota(50_000);
     const base = comptime Curve.base(curve);
     const levels = comptime (math.log2_int(u16, n) / math.log2_int(u16, base));
     const max_levels = if (base == 2) 4 else 2;
@@ -375,14 +388,10 @@ test "check tile to fill's map are invertible" {
         .Morton16,
         .Morton32,
         .Morton64,
-        .Morton128,
-        .Morton256,
         .Spring16,
         .Spring64,
-        .Spring256,
         .Zigzag16,
         .Zigzag64,
-        .Zigzag256,
     };
     inline for (curves) |curve| {
         const Index = comptime Curve.index(curve);

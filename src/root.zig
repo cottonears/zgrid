@@ -242,7 +242,7 @@ test "draw trees" {
         const indexes = calc.getRange(u16, num_vols);
         try tree.addVolumes(bodies, &indexes);
         try tree.build();
-        var canvas = try drawTreeSvg(T, &tree, test_alloc, true);
+        var canvas = try drawTreeSvg(T, &tree, test_alloc, false);
         defer canvas.deinit(test_alloc);
         var buf: [512]u8 = undefined;
         const path = try std.fmt.bufPrint(&buf, "{s}/{s}.html", .{ test_dir, @typeName(T) });
