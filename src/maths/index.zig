@@ -7,6 +7,8 @@ const math = std.math;
 const Curve = curve.Curve;
 const Box2f = volume.Box2f;
 const Vec2f = calc.Vec2f;
+const GridIndex = curve.GridIndex;
+const GridCoords = struct { row: GridIndex, col: GridIndex };
 
 /// Recursively indexes a region on the 2D plane.
 /// Level 0 'compresses' several layers' worth of children to limit traversal depth.
@@ -53,9 +55,6 @@ pub fn Indexer2f(
             }
             break :blk scales;
         };
-        const GridIndex = u16; // NOTE: any smaller is slower (stored as register temporary).
-        const index_batch_len = 8;
-        const GridCoords = struct { row: GridIndex, col: GridIndex };
         const Self = @This();
 
         /// Gets the position index of the first child node, one level below the parent.
@@ -126,8 +125,8 @@ pub fn Indexer2f(
             const start_0 = getLeafPredecessor(start_leaf, 0);
             for (lo.row..hi.row + 1) |row| {
                 for (lo.col..hi.col + 1) |col| {
-                    const leaf_row: u16 = @truncate(row << leaf_coord_shift);
-                    const leaf_col: u16 = @truncate(col << leaf_coord_shift);
+                    const leaf_row: GridIndex = @truncate(row << leaf_coord_shift);
+                    const leaf_col: GridIndex = @truncate(col << leaf_coord_shift);
                     const leaf_index = curve.getIndex(curve_type, leaf_row, leaf_col);
                     const top_index = getLeafPredecessor(leaf_index, 0);
                     if (top_index >= start_0) res_list.appendAssumeCapacity(top_index);
@@ -153,7 +152,7 @@ pub fn Indexer2f(
         }
 
         /// Gets the indexes of leaf cells that are n distance (taxi-cab metric) from a leaf node.
-        pub fn getLeafCellNeighbours(buff: []CurveIndex, index: CurveIndex, n: u16) ![]CurveIndex {
+        pub fn getLeafCellNeighbours(buff: []CurveIndex, index: CurveIndex, n: u8) ![]CurveIndex {
             var blen: usize = 0;
             if (n == 0) {
                 buff[0] = index;
@@ -431,7 +430,7 @@ test "check get leaf cell neighbours near edge" {
     const p_gc = Indexer.getGridCoordsForIndex(p_idx);
     var idx_seen = [_]bool{false} ** Indexer.num_leaves;
     var n_buff: [Indexer.num_leaves]Indexer.CurveIndex = undefined;
-    var n: u16 = 0;
+    var n: u8 = 0;
     // search for successive rings of nearby indexes; iterate to cover the whole grid
     while (n <= Indexer.coord_max) : (n += 1) {
         const ring = try Indexer.getLeafCellNeighbours(&n_buff, p_idx, n);

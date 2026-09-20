@@ -679,7 +679,7 @@ pub fn SquareTree(
             if (k > buf.len) return error.BufferCapacityExceeded;
             const leaf_index = self.indexer.getLeafIndexForPoint(point);
             var len: usize = 0;
-            var iter: u16 = 0;
+            var iter: u8 = 0;
             var furthest_dist: f32 = 0;
             var next_min_dist: f32 = 0;
             var scratch_buf: [max_ring_size]CurveIndex = undefined;
