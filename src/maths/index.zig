@@ -123,8 +123,8 @@ pub fn Indexer2f(
             const lo = self.getTopLevelCoordsForPoint(b.min);
             const hi = self.getTopLevelCoordsForPoint(b.max);
             const start_0 = getLeafPredecessor(start_leaf, 0);
-            for (lo.row..hi.row + 1) |row| {
-                for (lo.col..hi.col + 1) |col| {
+            for (lo.row..@as(usize, hi.row) + 1) |row| {
+                for (lo.col..@as(usize, hi.col) + 1) |col| {
                     const leaf_row: GridIndex = @truncate(row << leaf_coord_shift);
                     const leaf_col: GridIndex = @truncate(col << leaf_coord_shift);
                     const leaf_index = curve.getIndex(curve_type, leaf_row, leaf_col);

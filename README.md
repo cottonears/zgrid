@@ -104,8 +104,9 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 ```
-
-There is a companion project [`zgrid-demo`](https://github.com/cottonears/zgrid-demo) that uses zgrid + SDL3 in a simple particle simulation.
+There are two companion projects for zgrid:
+- [`zgrid-demo`](https://github.com/cottonears/zgrid-demo) - a simple particle simulation built with zgrid + SDL3.
+- [`zgrid-bench`](https://github.com/cottonears/zgrid-bench) - CLI app for benchmarking: helpful when tuning for performance.
 
 
 ## Volumes
@@ -148,9 +149,19 @@ This results in lower memory usage (+ safer runtime behaviour) than a naiive app
 ![Morton16](docs/img/curve_morton_16.svg)
 ![ZigZag16](docs/img/curve_zigzag_16.svg)
 
+## Multi-threading
+Core tree methods provide have `Parallel` variants that will execute in parallel if the provided `io` implementation supports it.
+The parallel methods are lock-free and designed to balance their workloads among threads as best as possible.
 
-## Sizing your square tree
-(Tips + directions to how to size trees and use the benchmark tool on data representative of use-case, or (even better) directly imported data from a real scene).
+```
+some example code
+```
+
+Use of the parallel methods is encouraged where more performance is desired, but the single-threaded methods will be adequate for many use-cases.
+Calling tree methods (including the non-parallel ones) from different threads (in client code) is strongly discouraged.
+Most tree methods are not thread safe, so doing this will lead to problems.
+
+
 
 ## 0.1 TODO
 - [X] Improve benchmarking reports + tooling (better stats + warmup queries).
@@ -160,8 +171,8 @@ This results in lower memory usage (+ safer runtime behaviour) than a naiive app
 - [X] Add findExtOverlapsSingle.
 - [X] Improve indexing performance.
 - [X] Parallelise build (with a radix sort?).
-- [ ] Move benchmark to a separate repo to reduce compile times.
-- [ ] Implement `getExpandedVolume(V, vol, velocity, time_step)` (makes conservative BVs for moving bodies); required to prevent tunnelling.
+- [X] Move benchmark to a separate repo to reduce compile times.
+- [ ] Implement `getExpandedVolume(V, vol, velocity, time_step)` (makes conservative BVs for moving bodies); helper to avoid tunnelling.
 - [ ] Revamp this readme.
 - [ ] Set up CI (`zig build test` on push).
 
@@ -169,6 +180,8 @@ This results in lower memory usage (+ safer runtime behaviour) than a naiive app
 In no particular order:
 - Allow lines to be stored? Could be useful and should be easy.
 - Add support for convex hulls (definitely useful, not as easy).
+- Try out dual-tree traversal (again) for self-overlap queries.
 - Research BIGMIN/LITMAX as potential performance improvements for neighbours search.
-- Add layered_tree that wraps several trees (e.g., static + dynamic, player1, player2) and allows for easy in-tree and cross-tree queries.
+- Implement optimised Morton indexing with PDEP + PEXT (with fallback to current LUT if not available).
+- Add layered_tree that wraps several trees (e.g., static + dynamic) and allows for easy in-tree and cross-tree queries.
 - Experiment with a dynamic-depth 2D linear BVH along the lines of: https://research.nvidia.com/sites/default/files/pubs/2012-06_Maximizing-Parallelism-in/karras2012hpg_paper.pdf
