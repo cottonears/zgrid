@@ -46,25 +46,21 @@ pub const Canvas = struct {
         self.str.deinit(allocator);
     }
 
-    fn getClass(self: *Self, allocator: mem.Allocator, elt_style: []const u8) !u16 {
+    fn getClass(self: *Canvas, allocator: std.mem.Allocator, elt_style: []const u8) !u16 {
         if (self.styles.get(elt_style)) |class| return class;
-        const class: u16 = @intCast(self.styles.count());
+
         const key = try allocator.dupe(u8, elt_style);
         errdefer allocator.free(key);
-        var buf: [32]u8 = undefined;
-        const class_start = try std.fmt.bufPrint(&buf, "\n.s{d}{{", .{class});
-        try self.style_str.appendSlice(allocator, class_start);
-        var tokens = mem.tokenizeScalar(u8, elt_style, ' ');
-        while (tokens.next()) |token| {
-            const eq = mem.indexOfScalar(u8, token, '=') orelse continue;
-            try self.style_str.appendSlice(allocator, token[0..eq]);
-            try self.style_str.append(allocator, ':');
-            try self.style_str.appendSlice(allocator, token[eq + 2 .. token.len - 1]);
-            try self.style_str.append(allocator, ';');
-        }
-        try self.style_str.append(allocator, '}');
-        try self.styles.put(key, class);
-        return class;
+        const next_class: u16 = @intCast(self.styles.count());
+        try self.styles.put(key, next_class);
+        const class_str = try std.fmt.allocPrint(
+            allocator,
+            "\n.s{d}{{{s}}}",
+            .{ next_class, elt_style },
+        );
+        defer allocator.free(class_str);
+        try self.style_str.appendSlice(allocator, class_str);
+        return next_class;
     }
 
     pub fn addLine(
@@ -188,7 +184,7 @@ pub const Canvas = struct {
         var buf: [256]u8 = undefined;
         const style_str = try std.fmt.bufPrint(
             &buf,
-            "fill=\"hsl({d:.0},{d:.0}%,{d:.0}%)\" text-anchor=\"middle\"",
+            "fill:hsl({d:.0},{d:.0}%,{d:.0}%);text-anchor:middle;",
             .{ fill_hsl[0], fill_hsl[1], fill_hsl[2] },
         );
         const class = try self.getClass(allocator, style_str);
@@ -220,6 +216,7 @@ pub const Canvas = struct {
 
         const sum_lengths = svg_start.len + self.style_str.items.len + self.str.items.len;
         var text = try std.ArrayList(u8).initCapacity(allocator, sum_lengths);
+        errdefer text.deinit(allocator);
         try text.appendSlice(allocator, svg_start);
         try text.appendSlice(allocator, "\n<style>");
         try text.appendSlice(allocator, self.style_str.items);
@@ -270,34 +267,34 @@ pub const Style = struct {
         if (style.fill_active) {
             len = (try std.fmt.bufPrint(
                 buf_ptr,
-                "fill=\"hsl({d:.0},{d:.0}%,{d:.0}%)\" ",
+                "fill:hsl({d:.0},{d:.0}%,{d:.0}%);",
                 .{ style.fill_hsl[0], style.fill_hsl[1], style.fill_hsl[2] },
             )).len;
         } else {
             len = (try std.fmt.bufPrint(
                 buf_ptr,
-                "fill=\"none\" ",
+                "fill:none;",
                 .{},
             )).len;
         }
         if (style.stroke_active) {
             len += (try std.fmt.bufPrint(
                 buf_ptr[len..],
-                "stroke=\"hsl({d:.0},{d:.0}%,{d:.0}%)\" stroke-width=\"{d:.4}\" ",
+                "stroke:hsl({d:.0},{d:.0}%,{d:.0}%);stroke-width:{d:.4};",
                 .{ style.stroke_hsl[0], style.stroke_hsl[1], style.stroke_hsl[2], style.stroke_width },
             )).len;
 
             if (style.stroke_opacity < 1.0) {
                 len += (try std.fmt.bufPrint(
                     buf_ptr[len..],
-                    "stroke-opacity=\"{d:.4}\" ",
+                    "stroke-opacity:{d:.4};",
                     .{style.stroke_opacity},
                 )).len;
             }
             if (style.stroke_dashed) {
                 len += (try std.fmt.bufPrint(
                     buf_ptr[len..],
-                    "stroke-dasharray=\"{},{}\" ",
+                    "stroke-dasharray:{},{};",
                     .{ 2 * style.stroke_width, 2 * style.stroke_width },
                 )).len;
             }
