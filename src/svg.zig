@@ -4,7 +4,7 @@ const mem = std.mem;
 const Vec2f = @Vector(2, f32);
 
 /// Used to compose images from basic shapes; useful for eyeballing test data.
-pub const SvgCanvas = struct {
+pub const Canvas = struct {
     min: Vec2f,
     max: Vec2f,
     str: std.ArrayList(u8),
@@ -183,7 +183,7 @@ pub const SvgCanvas = struct {
         centre: Vec2f,
         text: []const u8,
         font_size: f32,
-        fill_hsl: [3]u9,
+        fill_hsl: [3]u16,
     ) !void {
         var buf: [256]u8 = undefined;
         const style_str = try std.fmt.bufPrint(
@@ -230,15 +230,15 @@ pub const SvgCanvas = struct {
         return text.toOwnedSlice(allocator);
     }
 
-    pub fn writeHtml(
+    pub fn writeToFile(
         self: *Self,
-        allocator: mem.Allocator,
         io: std.Io,
+        allocator: mem.Allocator,
         filename: []const u8,
-        clear: bool,
+        wrap_html: bool,
     ) !void {
-        const html_start = "<!DOCTYPE html>\n<html><body>";
-        const html_end = "</body></html>";
+        const wrap_start = if (wrap_html) "<!DOCTYPE html>\n<html><body>" else "";
+        const wrap_end = if (wrap_html) "</body></html>" else "";
         const svg_body = try self.getSvg(allocator);
         defer allocator.free(svg_body);
 
@@ -250,18 +250,17 @@ pub const SvgCanvas = struct {
         var buf: [4096]u8 = undefined;
         var buf_writer = file.writer(io, &buf);
         var writer = &buf_writer.interface;
-        try writer.print("{s}\n{s}\n{s}", .{ html_start, svg_body, html_end });
+        try writer.print("{s}\n{s}\n{s}", .{ wrap_start, svg_body, wrap_end });
         try buf_writer.flush();
-        if (clear) try self.str.resize(allocator, 0);
     }
 };
 
 pub const Style = struct {
     fill_active: bool = false,
-    fill_hsl: [3]u9 = .{ 0, 0, 0 },
+    fill_hsl: [3]u16 = .{ 0, 0, 0 },
     fill_opacity: f32 = 1.0,
     stroke_active: bool = true,
-    stroke_hsl: [3]u9 = .{ 0, 0, 0 },
+    stroke_hsl: [3]u16 = .{ 0, 0, 0 },
     stroke_width: f32 = 1,
     stroke_opacity: f32 = 1.0,
     stroke_dashed: bool = false,
@@ -306,97 +305,3 @@ pub const Style = struct {
         return buf_ptr[0..len];
     }
 };
-
-const DEFAULT_HUE_RANGE = [_]u9{ 0, 360 };
-const DEFAULT_SAT_RANGE = [_]u9{ 50, 70 };
-const DEFAULT_LT_RANGE = [_]u9{ 45, 50 };
-
-// TODO: remove this - not very useful
-pub const RandomHslPalette = struct {
-    prng: std.Random.DefaultPrng,
-    hsl_colours: [][3]u9,
-    h_min: u9 = DEFAULT_HUE_RANGE[0],
-    h_max: u9 = DEFAULT_HUE_RANGE[1],
-    s_min: u9 = DEFAULT_SAT_RANGE[0],
-    s_max: u9 = DEFAULT_SAT_RANGE[1],
-    l_min: u9 = DEFAULT_LT_RANGE[0],
-    l_max: u9 = DEFAULT_LT_RANGE[1],
-
-    const Self = @This();
-
-    pub fn init(allocator: mem.Allocator, num_colours: u8, seed: usize) !Self {
-        var pal = Self{
-            .prng = std.Random.DefaultPrng.init(seed),
-            .hsl_colours = try allocator.alloc([3]u9, num_colours),
-        };
-        pal.regenerate();
-        return pal;
-    }
-
-    pub fn deinit(self: *Self, allocator: mem.Allocator) void {
-        allocator.free(self.hsl_colours);
-    }
-
-    pub fn getRandomColour(self: *Self) [3]u9 {
-        const random = self.prng.random();
-        return .{
-            random.intRangeLessThan(u9, self.h_min, self.h_max),
-            random.intRangeLessThan(u9, self.s_min, self.s_max),
-            random.intRangeLessThan(u9, self.l_min, self.l_max),
-        };
-    }
-
-    /// The colours will be evenly spaced within the hue range, but have the same lightness + saturation.
-    pub fn regenerate(self: *Self) void {
-        const hue_range = self.h_max - self.h_min;
-        const hue_inc: u9 = @truncate(hue_range / self.hsl_colours.len);
-        var col = self.getRandomColour();
-        for (0..self.hsl_colours.len) |i| {
-            self.hsl_colours[i] = col;
-            col[0] = @intCast((@as(u16, col[0]) + hue_inc) % self.h_max);
-        }
-    }
-};
-
-// testing code
-const testing = std.testing;
-const canvas_min: Vec2f = .{ 0, 0 };
-const canvas_max: Vec2f = .{ 800, 600 };
-const bg_style = Style{
-    .fill_active = true,
-    .fill_hsl = .{ 0, 0, 90 },
-    .stroke_hsl = .{ 0, 0, 0 },
-};
-
-test "random colours" {
-    var pal = try RandomHslPalette.init(std.testing.allocator, 4, 0);
-    defer pal.deinit(std.testing.allocator);
-    for (0..4) |i| {
-        const current_hsl = pal.hsl_colours[i];
-        const next_hsl = pal.hsl_colours[(i + 1) % 4];
-        try testing.expect(current_hsl[0] != next_hsl[0]); // hue shifted
-        try testing.expect(current_hsl[1] == next_hsl[1]); // unchanged
-        try testing.expect(current_hsl[2] == next_hsl[2]); // unchanged
-    }
-}
-
-test "add elements" {
-    var points = [_]Vec2f{
-        [_]f32{ 0, 100 },
-        [_]f32{ 200, 300 },
-        [_]f32{ 100, 150 },
-    };
-    var canvas = try SvgCanvas.init(testing.allocator, canvas_min, canvas_max, bg_style);
-    defer canvas.deinit(testing.allocator);
-    var pal = try RandomHslPalette.init(std.testing.allocator, 4, 0);
-    defer pal.deinit(std.testing.allocator);
-
-    const style_0 = Style{ .stroke_hsl = pal.hsl_colours[0], .stroke_dashed = true };
-    const style_1 = Style{ .stroke_hsl = pal.hsl_colours[1] };
-    const style_2 = Style{ .stroke_hsl = pal.hsl_colours[2] };
-    const style_3 = Style{ .stroke_hsl = pal.hsl_colours[3] };
-    try canvas.addRectangle(testing.allocator, [_]f32{ -200, 0 }, [_]f32{ -200, 200 }, style_0);
-    try canvas.addPolygon(testing.allocator, points[0..], style_1);
-    try canvas.addCircle(testing.allocator, [_]f32{ 0, 200 }, 10.0, style_2);
-    try canvas.addLine(testing.allocator, [_]f32{ -200, -100 }, [_]f32{ 200, 300 }, style_3);
-}

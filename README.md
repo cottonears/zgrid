@@ -6,8 +6,8 @@ It supports the following primitives: axis-aligned bounding-boxes (AABBs), orien
 Currently zgrid only offers one data structure, `SquareTree`, for queries in 2D scenes.
 A square tree is ideal for for realtime applications where objects are densely packed (e.g., life / particle simulators, RPG-/RTS-style games).
 It should scale well for scenes with 10,000+ objects (more with multi-threading).
-A square tree won't be suitable for every application, it is likely to be slower than alternatives in sparse scenes.
-Other types of trees may be implemented in future, see the [Roadmap](#roadmap).
+
+Other types of trees are planened once the public API of `SquareTree` has stabilised; see the [Roadmap](#roadmap).
 
 ## Prerequisites
 Zig 0.16.

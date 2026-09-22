@@ -4,7 +4,6 @@ const index = @import("maths/index.zig");
 const rand = @import("maths/rand.zig");
 const vol = @import("maths/volume.zig");
 const para = @import("parallel.zig");
-const draw = @import("draw.zig");
 const math = std.math;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
