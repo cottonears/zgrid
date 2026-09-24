@@ -3,9 +3,8 @@ const std = @import("std");
 const math = std.math;
 pub const GridIndex = u8;
 
-// TODO: add support for Hilbert curves!
 pub const Curve = enum {
-    // the standard Lebesgue / Morton Z-shaped curve produced by bit-interleaving
+    // TODO: add support for Hilbert curves!
     Morton2,
     Morton4,
     Morton8,
@@ -14,12 +13,10 @@ pub const Curve = enum {
     Morton64,
     Morton128,
     Morton256,
-    // boing
     Spring4,
     Spring16,
     Spring64,
     Spring256,
-    // fancy
     Zigzag4,
     Zigzag16,
     Zigzag64,

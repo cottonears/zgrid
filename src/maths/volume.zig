@@ -465,3 +465,21 @@ test "encompassing boxes" {
     try testing.expectEqual(@min(a.min, b.min), c.min);
     try testing.expectEqual(@max(a.max, b.max), c.max);
 }
+
+pub const Ball2Test = struct {
+    centre: [2]f32,
+    radius: f32,
+    const Self = @This();
+};
+
+test "volume sizes match readme" {
+    const Types = [_]type{ f32, [2]f32, Vec2f, Ball2f, Ball2Test, Box2f, Line2f, OrientedBox2f };
+    inline for (Types) |V| {
+        std.debug.print(
+            "{s}: align = {}, size = {}\n",
+            .{ @typeName(V), @alignOf(V), @sizeOf(V) },
+        );
+    }
+    // TODO: lollll; change everything in this module to [2]f32 and measure performance difference!
+    // This might lead to a big refactor =/ (but also lots more performance)
+}
