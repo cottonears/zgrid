@@ -11,8 +11,9 @@ const Ball2f = zgrid.Ball2f;
 const Box2f = zgrid.Box2f;
 const Line2f = zgrid.Line2f;
 const OrientedBox2f = zgrid.OrientedBox2f;
-const ProbDensityFunc = zgrid.rand.ProbDensityFunc;
-const TestVolumes = zgrid.rand.TestVolumes;
+const DataTable = zgrid.stats.DataTable;
+const ProbDensityFunc = zgrid.stats.ProbDensityFunc;
+const TestVolumes = zgrid.stats.TestVolumes;
 const Indexer2f = zgrid.Indexer2f;
 const SquareTree = zgrid.SquareTree;
 
@@ -108,7 +109,8 @@ fn benchmarkOverlapChecks(allocator: Allocator, io: std.Io) !void {
     const formats: [num_cols][]const u8 = .{
         " {d:>9.3} ", " {d:>7.3} ", " {d:>8.3} ", " {d:>7.3} ", " {d:>8.3} ",
     };
-    var table = try DataTable(f64, num_cols, headers, formats).init(allocator, num_trials);
+    const OverlapTable = DataTable(f64, num_cols, "| {s:<10} |", headers, formats);
+    var table = try OverlapTable.init(allocator, num_trials);
     defer table.deinit(allocator);
     var first_ball = random_vols.balls.items[0];
     first_ball.radius = first_ball.radius * 25;
@@ -158,7 +160,7 @@ fn benchmarkOverlapChecks(allocator: Allocator, io: std.Io) !void {
             overlap_count += if (volume.checkVolumesOverlap(query_line, b)) 1 else 0;
         }
         const t_5 = timer.now(io);
-        try table.addRow(.{
+        table.addRow(.{
             elapsedNs(t_0, t_1) / ball_checks,
             elapsedNs(t_1, t_2) / box_checks,
             elapsedNs(t_2, t_3) / mixed_checks,
@@ -187,7 +189,8 @@ fn benchmarkIndexing(allocator: Allocator, io: std.Io) !void {
     };
     const headers: [2][]const u8 = .{ " time (ns/pt) ", " inter-leaf dist " };
     const formats: [2][]const u8 = .{ " {d:>12.3} ", " {d:>15.4} " };
-    var table = try DataTable(f64, 2, headers, formats).init(allocator, num_trials);
+    const IndexingTable = DataTable(f64, 2, "| {s:<24} |", headers, formats);
+    var table = try IndexingTable.init(allocator, num_trials);
     defer table.deinit(allocator);
     var table_str = try std.ArrayList(u8).initCapacity(allocator, 2048);
     defer table_str.deinit(allocator);
@@ -225,7 +228,7 @@ fn benchmarkIndexing(allocator: Allocator, io: std.Io) !void {
             }
             const t_1 = timer.now(io);
             const avg_t = elapsedNs(t_0, t_1) / @as(f64, @floatFromInt(indexes.len));
-            try table.addRow(.{ avg_t, avg_il_dist });
+            table.addRow(.{ avg_t, avg_il_dist });
         }
 
         if (table_str.items.len == 0) {
@@ -337,7 +340,9 @@ fn benchmarkTree(
     const formats: [6][]const u8 = .{
         " {d:>3.1}% ", " {d:>5.1}% ", " {d:>11.1}% ", " {d:>10.1}% ", " {d:>8.1}% ", " {d:>5.2} ms ",
     };
-    var table = try DataTable(f64, 6, headers, formats).init(allocator, num_trials);
+
+    const TreeTable = DataTable(f64, 6, "| {s:<24} |", headers, formats);
+    var table = try TreeTable.init(allocator, num_trials);
     defer table.deinit(allocator);
     const bodies = random_vols.getVolumes(TreeType.Volume);
     const pair_buf = try allocator.alloc([2]TreeType.ClientId, 1024 * bodies.len);
@@ -417,7 +422,7 @@ fn benchmarkTree(
         ext_overlaps = (try tree.findExtOverlapsParallel(io, pair_buf, ext_query_ids, ext_query_vols)).len;
         const t_5 = timer.now(io);
         const total_ns = elapsedNs(t_0, t_5);
-        try table.addRow(.{
+        table.addRow(.{
             100 * elapsedNs(t_0, t_1) / total_ns,
             100 * elapsedNs(t_1, t_2) / total_ns,
             100 * elapsedNs(t_2, t_3) / total_ns,
@@ -431,124 +436,4 @@ fn benchmarkTree(
         try table.appendHeader(allocator, table_str, "indexer");
     }
     try table.appendStatsRow(allocator, table_str, Indexer.type_label, percentile);
-}
-
-/// Stores several columns of same-typed data and provides helpers for computing stats + printing.
-pub fn DataTable(
-    comptime T: type,
-    comptime num_cols: u8,
-    comptime headers: [num_cols][]const u8,
-    comptime formats: [num_cols][]const u8,
-) type {
-    const left_fmt = "| {s:<24} |";
-    const max_col_width = 32;
-
-    return struct {
-        column_data: [num_cols]std.ArrayList(T) = undefined,
-        is_sorted: bool = true,
-        num_rows: usize = 0,
-        const Self = @This();
-
-        pub fn init(allocator: Allocator, capacity: usize) !Self {
-            var cols: [num_cols]std.ArrayList(T) = undefined;
-            var cols_created: usize = 0;
-            errdefer for (0..cols_created) |i| cols[i].deinit(allocator);
-            for (0..num_cols) |i| {
-                cols[i] = try std.ArrayList(T).initCapacity(allocator, capacity);
-                cols_created += 1;
-            }
-            return .{ .column_data = cols };
-        }
-
-        pub fn deinit(self: *Self, allocator: Allocator) void {
-            for (0..num_cols) |i| self.column_data[i].deinit(allocator);
-        }
-
-        /// Appends a row; returns OutOfMemory if a column is at capacity.
-        pub fn addRow(self: *Self, vals: [num_cols]T) !void {
-            for (0..num_cols) |j| try self.column_data[j].appendBounded(vals[j]);
-            self.is_sorted = false;
-            self.num_rows += 1;
-        }
-
-        /// Clears columns' contents without releasing their backing memory.
-        pub fn clear(self: *Self) void {
-            for (0..num_cols) |j| self.column_data[j].clearRetainingCapacity();
-            self.num_rows = 0;
-        }
-
-        /// Sorts column data and gets percentile stats for each column.
-        /// Doesn't interpolate between indexes: inaccurate at low sample sizes.
-        pub fn getPercentileStats(self: *Self, percentile: u8) ?[num_cols]T {
-            if (self.column_data[0].items.len == 0) return null;
-            var col_stats: [num_cols]T = undefined;
-            for (0..num_cols) |j| {
-                const items = self.column_data[j].items;
-                if (!self.is_sorted) std.sort.pdq(T, items, {}, std.sort.asc(T));
-                col_stats[j] = items[percentile * items.len / 100];
-            }
-            self.is_sorted = true;
-            return col_stats;
-        }
-
-        /// Caller owns the returned slice.
-        pub fn appendHeader(
-            _: Self,
-            allocator: Allocator,
-            str_list: *std.ArrayList(u8),
-            left_header: []const u8,
-        ) !void {
-            var left_buf: [max_col_width]u8 = undefined;
-            const left_str = try std.fmt.bufPrint(&left_buf, left_fmt, .{left_header});
-            try str_list.appendSlice(allocator, left_str);
-            for (0..num_cols) |j| {
-                try str_list.appendSlice(allocator, headers[j]);
-                try str_list.append(allocator, '|');
-            }
-            try str_list.append(allocator, '\n');
-        }
-
-        // caller owns the returned memory
-        pub fn appendStatsRow(
-            self: *Self,
-            allocator: Allocator,
-            str_list: *std.ArrayList(u8),
-            row_title: []const u8,
-            pct: u8,
-        ) !void {
-            const col_stats = self.getPercentileStats(pct) orelse return error.NoValues;
-            var left_buf: [max_col_width]u8 = undefined;
-            const left_str = try std.fmt.bufPrint(&left_buf, left_fmt, .{row_title});
-            try str_list.appendSlice(allocator, left_str);
-            var fmt_buf: [max_col_width]u8 = undefined;
-            inline for (0..num_cols) |i| {
-                const cell_val = col_stats[i];
-                const stat_str = try std.fmt.bufPrint(&fmt_buf, formats[i], .{cell_val});
-                try str_list.appendSlice(allocator, stat_str);
-                try str_list.append(allocator, '|');
-            }
-            try str_list.append(allocator, '\n');
-        }
-
-        /// Builds a multi-line string of column stats: one row for each percentile.
-        /// Caller owns the returned slice.
-        pub fn getStatsTable(
-            self: *Self,
-            allocator: Allocator,
-            left_header: []const u8, // header for the left-most column
-            percentiles: []const u8, // numeric values, e.g. {50, 95}
-        ) ![]u8 {
-            const reserve_size = max_col_width * @as(usize, num_cols) * (1 + percentiles.len);
-            var str_list = try std.ArrayList(u8).initCapacity(allocator, reserve_size);
-            errdefer str_list.deinit(allocator);
-            try self.appendHeader(allocator, &str_list, left_header);
-            for (percentiles) |pct| {
-                var buf: [8]u8 = undefined;
-                const title = try std.fmt.bufPrint(&buf, "p{d:2}", .{pct});
-                try self.appendStatsRow(allocator, &str_list, title, pct);
-            }
-            try str_list.appendSlice(allocator, "\n");
-            return str_list.toOwnedSlice(allocator);
-        }
-    };
 }

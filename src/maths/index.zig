@@ -2,7 +2,7 @@
 const std = @import("std");
 const calc = @import("calc.zig");
 const curve = @import("curve.zig");
-const rand = @import("rand.zig");
+const stats = @import("stats.zig");
 const volume = @import("volume.zig");
 const math = std.math;
 const Curve = curve.Curve;
@@ -226,7 +226,7 @@ pub fn Indexer2f(
 
 const testing = std.testing;
 const test_alloc = std.testing.allocator;
-const test_dist: rand.ProbDensityFunc = .{ .uniform = .{ .min = -5.0, .max = 5.0 } };
+const test_dist: stats.ProbDensityFunc = .{ .uniform = .{ .min = -5.0, .max = 5.0 } };
 
 test "hexa tree indexing" {
     const Indexer = Indexer2f(Curve.Spring16, 1);
@@ -307,11 +307,11 @@ test "compressed indexing test" {
     // finally, generate some random points and check their indexes are identical in both trees
     var reg_indexer = try RegIndexer.init(.{ 0, 0 }, .{ 8, 8 });
     var comp_indexer = try CompIndexer.init(.{ 0, 0 }, .{ 8, 8 });
-    const seed = rand.getClockBasedRngSeed(testing.io);
+    const seed = stats.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
-    errdefer rand.printErrorMessageForRandomSeed(seed);
+    errdefer stats.printErrorMessageForRandomSeed(seed);
     var test_pts: [1000]Vec2f = undefined;
-    rand.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &test_pts);
+    stats.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &test_pts);
     for (test_pts) |p| {
         const r_idx = reg_indexer.getLeafIndexForPoint(p);
         const c_idx = comp_indexer.getLeafIndexForPoint(p);
@@ -325,11 +325,11 @@ test "inter-leaf distances are bounded" {
         Indexer2f(Curve.Spring16, 1),
         Indexer2f(Curve.Zigzag16, 1),
     };
-    const seed = rand.getClockBasedRngSeed(testing.io);
+    const seed = stats.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
-    errdefer rand.printErrorMessageForRandomSeed(seed);
+    errdefer stats.printErrorMessageForRandomSeed(seed);
     var test_pts: [500]Vec2f = undefined;
-    rand.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &test_pts);
+    stats.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &test_pts);
     const min_pt = Vec2f{ -5, -5 };
     const max_pt = Vec2f{ 5, 5 };
     // check that any points (within the region) who share an index are relatively close
@@ -392,11 +392,11 @@ test "leaf index round trip" {
 }
 
 test "check get leaf cell neighbours in centre" {
-    const seed = rand.getClockBasedRngSeed(testing.io);
+    const seed = stats.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
-    errdefer rand.printErrorMessageForRandomSeed(seed);
+    errdefer stats.printErrorMessageForRandomSeed(seed);
     var random_pts: [100]Vec2f = undefined;
-    rand.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &random_pts);
+    stats.ProbDensityFunc.fillVec2f(test_dist, prng.random(), &random_pts);
     const Indexer = Indexer2f(Curve.Zigzag16, 1);
     const indexer = try Indexer.init(.{ -10, -10 }, .{ 10, 10 });
     // check size and values match what is expected

@@ -1,8 +1,9 @@
-//! Helper module for generating random data.
+//! Helper module for generating random data and recorded statistics.
 const std = @import("std");
 const calc = @import("calc.zig");
 const volume = @import("volume.zig");
 const math = std.math;
+const Allocator = std.mem.Allocator;
 const Box2f = volume.Box2f;
 const Ball2f = volume.Ball2f;
 const OrientedBox2f = volume.OrientedBox2f;
@@ -17,6 +18,138 @@ pub fn getClockBasedRngSeed(io: std.Io) u64 {
 /// Use this in errdefer block to help reproduce an error that might be related to a random seed.
 pub fn printErrorMessageForRandomSeed(seed: u64) void {
     std.debug.print("Error when testing with random data; seed = {d}\n", .{seed});
+}
+
+/// Stores several columns of same-typed data and provides helpers for computing stats + printing.
+pub fn DataTable(
+    comptime T: type,
+    comptime num_cols: u8,
+    comptime left_fmt: []const u8,
+    comptime headers: [num_cols][]const u8,
+    comptime formats: [num_cols][]const u8,
+) type {
+    const max_col_width = 32;
+
+    return struct {
+        column_data: [num_cols]std.ArrayList(T) = undefined,
+        next_row: usize = 0,
+        const Self = @This();
+
+        pub fn init(allocator: Allocator, capacity: usize) !Self {
+            std.debug.assert(capacity > 0);
+            var cols: [num_cols]std.ArrayList(T) = undefined;
+            var cols_created: usize = 0;
+            errdefer for (0..cols_created) |i| cols[i].deinit(allocator);
+            for (0..num_cols) |i| {
+                cols[i] = try std.ArrayList(T).initCapacity(allocator, capacity);
+                cols_created += 1;
+            }
+            return .{ .column_data = cols };
+        }
+
+        pub fn deinit(self: *Self, allocator: Allocator) void {
+            for (0..num_cols) |i| self.column_data[i].deinit(allocator);
+        }
+
+        /// Adds a row to the table, overwriting the oldest one if at capacity.
+        pub fn addRow(self: *Self, vals: [num_cols]T) void {
+            if (self.column_data[0].items.len < self.column_data[0].capacity) {
+                for (0..num_cols) |j| self.column_data[j].appendAssumeCapacity(vals[j]);
+                self.next_row = self.column_data[0].items.len % self.column_data[0].capacity;
+            } else {
+                for (0..num_cols) |j| self.column_data[j].items[self.next_row] = vals[j];
+                self.next_row = (self.next_row + 1) % self.column_data[0].items.len;
+            }
+        }
+
+        /// Clears columns' contents without releasing their backing memory.
+        pub fn clear(self: *Self) void {
+            for (0..num_cols) |j| self.column_data[j].clearRetainingCapacity();
+            self.next_row = 0;
+        }
+
+        /// Gets percentile stats for each column.
+        /// Doesn't interpolate between indexes: inaccurate at low sample sizes.
+        pub fn getPercentileStats(self: Self, scratch: []T, pct: u8) ?[num_cols]T {
+            const len = self.column_data[0].items.len;
+            if (len == 0) return null;
+            std.debug.assert(scratch.len >= len);
+            std.debug.assert(pct <= 100);
+
+            var col_stats: [num_cols]T = undefined;
+            for (0..num_cols) |j| {
+                const items = self.column_data[j].items;
+                const idx = @min(items.len - 1, @as(usize, pct) * items.len / 100);
+                @memcpy(scratch[0..items.len], items);
+                std.sort.pdq(T, scratch[0..items.len], {}, std.sort.asc(T));
+                col_stats[j] = scratch[idx];
+            }
+            return col_stats;
+        }
+
+        /// Appends a header string to the array list.
+        pub fn appendHeader(
+            _: Self,
+            allocator: Allocator,
+            str_list: *std.ArrayList(u8),
+            left_header: []const u8,
+        ) !void {
+            var left_buf: [max_col_width]u8 = undefined;
+            const left_str = try std.fmt.bufPrint(&left_buf, left_fmt, .{left_header});
+            try str_list.appendSlice(allocator, left_str);
+            for (0..num_cols) |j| {
+                try str_list.appendSlice(allocator, headers[j]);
+                try str_list.append(allocator, '|');
+            }
+            try str_list.append(allocator, '\n');
+        }
+
+        /// Appends a row string to the array list.
+        pub fn appendStatsRow(
+            self: Self,
+            allocator: Allocator,
+            str_list: *std.ArrayList(u8),
+            row_title: []const u8,
+            pct: u8,
+        ) !void {
+            const scratch = try allocator.alloc(T, self.column_data[0].capacity);
+            defer allocator.free(scratch);
+
+            const col_stats = self.getPercentileStats(scratch, pct) orelse return error.NoValues;
+            var left_buf: [max_col_width]u8 = undefined;
+            const left_str = try std.fmt.bufPrint(&left_buf, left_fmt, .{row_title});
+            try str_list.appendSlice(allocator, left_str);
+            var fmt_buf: [max_col_width]u8 = undefined;
+            inline for (0..num_cols) |i| {
+                const cell_val = col_stats[i];
+                const stat_str = try std.fmt.bufPrint(&fmt_buf, formats[i], .{cell_val});
+                try str_list.appendSlice(allocator, stat_str);
+                try str_list.append(allocator, '|');
+            }
+            try str_list.append(allocator, '\n');
+        }
+
+        /// Builds a multi-line string of column stats: one row for each percentile.
+        /// Caller owns the returned slice.
+        pub fn getStatsTable(
+            self: Self,
+            allocator: Allocator,
+            left_header: []const u8, // header for the left-most column
+            percentiles: []const u8, // numeric values, e.g. {50, 95}
+        ) ![]u8 {
+            const reserve_size = max_col_width * @as(usize, num_cols) * (1 + percentiles.len);
+            var str_list = try std.ArrayList(u8).initCapacity(allocator, reserve_size);
+            errdefer str_list.deinit(allocator);
+            try self.appendHeader(allocator, &str_list, left_header);
+            for (percentiles) |pct| {
+                var buf: [8]u8 = undefined;
+                const title = try std.fmt.bufPrint(&buf, "p{d:2}", .{pct});
+                try self.appendStatsRow(allocator, &str_list, title, pct);
+            }
+            try str_list.appendSlice(allocator, "\n");
+            return str_list.toOwnedSlice(allocator);
+        }
+    };
 }
 
 /// Defines a probability distribution used to generate f32 test data.
@@ -120,7 +253,7 @@ pub const TestVolumes = struct {
     ///  - ball, centre_x, centre_y, radius
     ///  - box, min_x, min_y, max_x, max_y
     ///  - obb, centre_x, centre_y, half_extent_x, half_extent_y, axis_x, axis_y
-    pub fn initCsv(allocator: std.mem.Allocator, io: std.Io, filepath: []const u8) !Self {
+    pub fn initCsv(allocator: Allocator, io: std.Io, filepath: []const u8) !Self {
         const contents = try std.Io.Dir.cwd().readFileAlloc(io, filepath, allocator, .unlimited);
         defer allocator.free(contents);
 
@@ -175,7 +308,7 @@ pub const TestVolumes = struct {
         };
     }
 
-    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Self, allocator: Allocator) void {
         self.balls.deinit(allocator);
         self.boxes.deinit(allocator);
         self.oriented_boxes.deinit(allocator);

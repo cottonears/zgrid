@@ -1,7 +1,7 @@
 pub const calc = @import("maths/calc.zig");
 pub const curve = @import("maths/curve.zig");
 pub const index = @import("maths/index.zig");
-pub const rand = @import("maths/rand.zig");
+pub const stats = @import("maths/stats.zig");
 pub const volume = @import("maths/volume.zig");
 pub const parallel = @import("parallel.zig");
 pub const square_tree = @import("square_tree.zig");
@@ -127,10 +127,10 @@ test "tree self overlaps matches brute force" {
         SquareTree(Indexer2f(.Spring64, 1), Box2f, u16),
         SquareTree(Indexer2f(.Zigzag64, 1), OrientedBox2f, u16),
     };
-    const seed = rand.getClockBasedRngSeed(testing.io);
+    const seed = stats.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
-    errdefer rand.printErrorMessageForRandomSeed(seed);
-    var test_vols = try rand.TestVolumes.initRandom(
+    errdefer stats.printErrorMessageForRandomSeed(seed);
+    var test_vols = try stats.TestVolumes.initRandom(
         test_alloc,
         prng.random(),
         num_volumes,
@@ -166,13 +166,13 @@ test "tree self overlaps matches brute force" {
 }
 
 test "tree neighbours matches brute force" {
-    const seed = rand.getClockBasedRngSeed(testing.io);
+    const seed = stats.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
-    errdefer rand.printErrorMessageForRandomSeed(seed);
+    errdefer stats.printErrorMessageForRandomSeed(seed);
     const Tree = SquareTree(index.Indexer2f(.Zigzag64, 1), Ball2f, u16);
     var tree = try Tree.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, num_volumes, 0);
     defer tree.deinit(test_alloc);
-    var test_vols = try rand.TestVolumes.initRandom(
+    var test_vols = try stats.TestVolumes.initRandom(
         test_alloc,
         prng.random(),
         num_volumes,
@@ -234,10 +234,10 @@ test "draw trees" {
         SquareTree(Indexer, OrientedBox2f, u16),
     };
     const num_vols = 32;
-    const seed = rand.getClockBasedRngSeed(testing.io);
+    const seed = stats.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
-    errdefer rand.printErrorMessageForRandomSeed(seed);
-    var test_vols = try rand.TestVolumes.initRandom(
+    errdefer stats.printErrorMessageForRandomSeed(seed);
+    var test_vols = try stats.TestVolumes.initRandom(
         test_alloc,
         prng.random(),
         num_vols,
