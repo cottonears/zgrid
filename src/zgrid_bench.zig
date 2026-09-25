@@ -2,33 +2,36 @@ const std = @import("std");
 const builtin = @import("builtin");
 const zgrid = @import("zgrid");
 const calc = zgrid.calc;
-const index = zgrid.index;
-const rand = zgrid.rand;
-const st = zgrid.square_tree;
 const volume = zgrid.volume;
+const timer = std.Io.Clock.awake;
+const Allocator = std.mem.Allocator;
 const ArgsIter = std.process.Args.Iterator;
 const Vec2f = zgrid.Vec2f;
 const Ball2f = zgrid.Ball2f;
 const Box2f = zgrid.Box2f;
 const Line2f = zgrid.Line2f;
 const OrientedBox2f = zgrid.OrientedBox2f;
-const ProbDensityFunc = rand.ProbDensityFunc;
-const TestVolumes = rand.TestVolumes;
-const timer = std.Io.Clock.awake;
+const ProbDensityFunc = zgrid.rand.ProbDensityFunc;
+const TestVolumes = zgrid.rand.TestVolumes;
+const Indexer2f = zgrid.Indexer2f;
+const SquareTree = zgrid.SquareTree;
+
 const max_capacity = 400_000;
-const min_trials = 10;
+const min_trials = 20;
 const min_num_vols = 100;
+const stat_header = "percentile";
+const stat_percentiles: [2]u8 = .{ 50, 95 };
+const untimed_trials = 5;
 const usage_msg =
     \\Usage: zgrid-bench [options]
     \\  -i: Set an input file (csv or txt) to load test volumes from (see readme for correct format)
-    \\  -t: Number of times to repeat each benchmark (for stable timing averages); default = 30
+    \\  -t: Number of times to repeat each benchmark (for stable timing averages); default = 100
     \\
 ;
 var input_file: ?[]const u8 = null;
 var output_dir: ?[]const u8 = null;
 var random_vols: TestVolumes = undefined;
-var num_trials: u8 = 30;
-const untimed_trials = 3;
+var num_trials: u8 = 100;
 
 /// Fetches the value following a flag
 fn nextArgValue(args_iter: *ArgsIter, flag: []const u8) ![:0]const u8 {
@@ -78,15 +81,18 @@ pub fn main(init: std.process.Init) !void {
     if (input_file) |file| {
         random_vols = try TestVolumes.initCsv(allocator, init.io, file);
         std.debug.print("Running benchmarks using volumes loaded from '{s}'...\n", .{file});
-    } else {
+    } else { // default built-in benchmark
+        const num_vols = 20_000;
+        const pos_dist: ProbDensityFunc = .{ .normal = .{ .mean = 5.0, .stddev = 1.5 } };
+        const size_dist: ProbDensityFunc = .{ .uniform = .{ .min = 0.001, .max = 0.05 } };
         var prng = std.Random.DefaultPrng.init(0);
-        random_vols = try TestVolumes.initRandom(allocator, prng.random(), num_vols, size_dist, position_dist);
-        std.debug.print("Running benchmarks for {} vols...\n", .{num_vols});
+        random_vols = try TestVolumes.initRandom(allocator, prng.random(), num_vols, size_dist, pos_dist);
+        std.debug.print("Running benchmarks for {} vols...\n\n", .{num_vols});
     }
     defer random_vols.deinit(allocator);
 
-    try benchmarkIndexing(allocator, init.io);
     try benchmarkOverlapChecks(allocator, init.io);
+    try benchmarkIndexing(allocator, init.io);
     try benchmarkSquareTrees(allocator, init.io);
 }
 
@@ -94,71 +100,7 @@ fn elapsedNs(t1: std.Io.Timestamp, t2: std.Io.Timestamp) f64 {
     return @floatFromInt(std.Io.Timestamp.durationTo(t1, t2).toNanoseconds());
 }
 
-fn benchmarkIndexing(allocator: std.mem.Allocator, io: std.Io) !void {
-    const IndexerTypes = [_]type{
-        index.Indexer2f(.Morton16, 1),
-        index.Indexer2f(.Morton32, 1),
-        index.Indexer2f(.Morton64, 1),
-        index.Indexer2f(.Morton128, 1),
-        index.Indexer2f(.Zigzag256, 1),
-        index.Indexer2f(.Zigzag16, 1),
-        index.Indexer2f(.Zigzag64, 1),
-        index.Indexer2f(.Zigzag256, 1),
-    };
-    const headers: [1][]const u8 = .{" time (ns/pt) "};
-    const formats: [1][]const u8 = .{" {d:>12.3} "};
-    const num_total_rows = IndexerTypes.len * num_trials;
-    var table = try DataTable(f64, 1, headers, formats).init(allocator, num_total_rows);
-    defer table.deinit(allocator);
-
-    inline for (IndexerTypes) |Indexer| {
-        table.clear();
-        const pt1 = random_vols.balls.items[0].centre;
-        const pt2 = random_vols.balls.items[1].centre;
-        var indexer = try Indexer.init(pt1, pt2);
-        var indexes = try allocator.alloc(Indexer.CurveIndex, random_vols.boxes.items.len);
-        defer allocator.free(indexes);
-
-        // measure inter-leaf distances (crude indicator of how well the curve preserves locality)
-        var index_dist_sum: f64 = 0.0;
-        var next_centre = indexer.getLeafCellBoundary(0).getCentre();
-        for (1..Indexer.num_leaves) |i| {
-            const centre_i = indexer.getLeafCellBoundary(@truncate(i)).getCentre();
-            index_dist_sum += calc.norm(centre_i - next_centre);
-            next_centre = centre_i;
-        }
-        const avg_il_dist = index_dist_sum / @as(f64, @floatFromInt(Indexer.num_leaves - 1));
-
-        // untimed warmup trials
-        for (0..untimed_trials) |_| {
-            for (random_vols.boxes.items, 0..) |b, i| {
-                const index_of_b = indexer.getLeafIndexForPoint(b.getCentre());
-                indexes[i] = index_of_b;
-            }
-        }
-
-        // timed trails
-        for (0..num_trials) |_| {
-            const t_0 = timer.now(io);
-            for (random_vols.boxes.items, 0..) |b, i| {
-                const index_of_b = indexer.getLeafIndexForPoint(b.getCentre());
-                indexes[i] = index_of_b;
-            }
-            const t_1 = timer.now(io);
-            const avg_t = elapsedNs(t_0, t_1) / @as(f64, @floatFromInt(random_vols.boxes.items.len));
-            try table.addRow(.{avg_t});
-        }
-
-        const stats_str = try table.getStatsTable(allocator);
-        defer allocator.free(stats_str);
-        std.debug.print(
-            "Indexing benchmark for {s}: inter-leaf dist {d:.4}:\n{s}\n",
-            .{ Indexer.type_label, avg_il_dist, stats_str },
-        );
-    }
-}
-
-fn benchmarkOverlapChecks(allocator: std.mem.Allocator, io: std.Io) !void {
+fn benchmarkOverlapChecks(allocator: Allocator, io: std.Io) !void {
     const num_cols = 5;
     const headers: [num_cols][]const u8 = .{
         " ball-ball ", " box-box ", " ball-box ", " obb-box ", " line-box ",
@@ -226,12 +168,75 @@ fn benchmarkOverlapChecks(allocator: std.mem.Allocator, io: std.Io) !void {
     }
 
     std.debug.print("Overlap checks: found {} overlaps:\n", .{overlap_count});
-    const stats_str = try table.getStatsTable(allocator);
+    const left_header = "percentile";
+    const stats_str = try table.getStatsTable(allocator, left_header[0..], &stat_percentiles);
     defer allocator.free(stats_str);
     std.debug.print("{s}\n", .{stats_str});
 }
 
-fn benchmarkSquareTrees(allocator: std.mem.Allocator, io: std.Io) !void {
+fn benchmarkIndexing(allocator: Allocator, io: std.Io) !void {
+    const IndexerTypes = [_]type{
+        Indexer2f(.Morton16, 1),
+        Indexer2f(.Morton32, 1),
+        Indexer2f(.Morton64, 1),
+        Indexer2f(.Morton128, 1),
+        Indexer2f(.Morton256, 1),
+        Indexer2f(.Zigzag16, 1),
+        Indexer2f(.Zigzag64, 1),
+        Indexer2f(.Zigzag256, 1),
+    };
+    const headers: [2][]const u8 = .{ " time (ns/pt) ", " inter-leaf dist " };
+    const formats: [2][]const u8 = .{ " {d:>12.3} ", " {d:>15.4} " };
+    var table = try DataTable(f64, 2, headers, formats).init(allocator, num_trials);
+    defer table.deinit(allocator);
+    var table_str = try std.ArrayList(u8).initCapacity(allocator, 2048);
+    defer table_str.deinit(allocator);
+
+    inline for (IndexerTypes) |Indexer| {
+        table.clear();
+        const pt1 = random_vols.balls.items[0].centre;
+        const pt2 = random_vols.balls.items[1].centre;
+        var indexer = try Indexer.init(pt1, pt2);
+        const indexes = try allocator.alloc(Indexer.CurveIndex, random_vols.boxes.items.len);
+        defer allocator.free(indexes);
+
+        // measure inter-leaf distances (crude indicator of how well the curve preserves locality)
+        var index_dist_sum: f64 = 0.0;
+        var next_centre = indexer.getLeafCellBoundary(0).getCentre();
+        for (1..Indexer.num_leaves) |i| {
+            const centre = indexer.getLeafCellBoundary(@truncate(i)).getCentre();
+            index_dist_sum += calc.norm(centre - next_centre);
+            next_centre = centre;
+        }
+        const avg_il_dist = index_dist_sum / @as(f64, @floatFromInt(Indexer.num_leaves - 1));
+
+        // untimed warmup trials
+        for (0..untimed_trials) |_| {
+            for (random_vols.boxes.items, 0..) |b, i| {
+                indexes[i] = indexer.getLeafIndexForPoint(b.getCentre());
+            }
+        }
+
+        // timed trials
+        for (0..num_trials) |_| {
+            const t_0 = timer.now(io);
+            for (random_vols.boxes.items, 0..) |b, i| {
+                indexes[i] = indexer.getLeafIndexForPoint(b.getCentre());
+            }
+            const t_1 = timer.now(io);
+            const avg_t = elapsedNs(t_0, t_1) / @as(f64, @floatFromInt(indexes.len));
+            try table.addRow(.{ avg_t, avg_il_dist });
+        }
+
+        if (table_str.items.len == 0) {
+            try table.appendHeader(allocator, &table_str, "indexer");
+        }
+        try table.appendStatsRow(allocator, &table_str, Indexer.type_label, stat_percentiles[0]);
+    }
+    std.debug.print("Indexing benchmark (p{}):\n{s}\n", .{ stat_percentiles[0], table_str.items });
+}
+
+fn benchmarkSquareTrees(allocator: Allocator, io: std.Io) !void {
     // these params control the amount + extent of per-frame external overlap + neighbour queries
     const ext_overlap_amount: f32 = 0.05; // number queries = 5% of number of vols
     const ext_overlap_scale: f32 = 0.05; // query radius is 5% of world extent
@@ -242,74 +247,86 @@ fn benchmarkSquareTrees(allocator: std.mem.Allocator, io: std.Io) !void {
     var buf: [256]u8 = undefined;
     const params_str = try std.fmt.bufPrint(
         &buf,
-        "ext_overlap: amount = {d:.3}, scale = {d:.3}\nnear_search: k = {d}, amount = {d:.3}, scale = {d:.3}\n",
+        "ext_overlap: amount = {d:.3}, scale = {d:.3}\nnear_search: k = {d}, amount = {d:.3}, scale = {d:.3}",
         .{ ext_overlap_amount, ext_overlap_scale, near_search_k, near_search_amount, near_search_scale },
     );
     inline for (.{ Ball2f, Box2f }) |V| {
-        std.debug.print(
-            "\nRunning regular tree benchmarks for {d} {any}...\n{s}\n",
-            .{ random_vols.getVolumes(V).len, V, params_str },
-        );
+        std.debug.print("\nUncompressed tree benchmarks for {any}...\n{s}\n", .{ V, params_str });
+        var reg_table_str = try std.ArrayList(u8).initCapacity(allocator, 4096);
+        defer reg_table_str.deinit(allocator);
         const RegIndexers = .{
-            index.Indexer2f(.Morton16, 1),
-            index.Indexer2f(.Morton32, 1),
-            index.Indexer2f(.Morton64, 1),
-            index.Indexer2f(.Morton128, 1),
-            index.Indexer2f(.Morton256, 1),
-            index.Indexer2f(.Zigzag16, 1),
-            index.Indexer2f(.Zigzag64, 1),
-            index.Indexer2f(.Zigzag256, 1),
+            Indexer2f(.Morton16, 1),
+            Indexer2f(.Spring16, 1),
+            Indexer2f(.Zigzag16, 1),
+            Indexer2f(.Morton32, 1),
+            Indexer2f(.Morton64, 1),
+            Indexer2f(.Spring64, 1),
+            Indexer2f(.Zigzag64, 1),
+            Indexer2f(.Morton128, 1),
+            Indexer2f(.Morton256, 1),
+            Indexer2f(.Spring256, 1),
+            Indexer2f(.Zigzag256, 1),
         };
         inline for (RegIndexers) |Indexer| {
             try benchmarkTree(
                 Indexer,
-                st.SquareTree(Indexer, V, u32),
+                SquareTree(Indexer, V, u32),
                 allocator,
                 io,
+                &reg_table_str,
                 ext_overlap_amount,
                 ext_overlap_scale,
                 near_search_k,
                 near_search_amount,
                 near_search_scale,
+                stat_percentiles[0],
             );
         }
-        std.debug.print(
-            "\nRunning compressed tree benchmarks for {d} {any}..\n{s}\n",
-            .{ random_vols.getVolumes(V).len, V, params_str },
-        );
+        std.debug.print("{s}\n", .{reg_table_str.items});
+
+        std.debug.print("\nCompressed tree benchmarks for {any}:\n{s}\n", .{ V, params_str });
         const CompIndexers = .{
-            index.Indexer2f(.Morton64, 2),
-            index.Indexer2f(.Morton64, 4),
-            index.Indexer2f(.Morton64, 6),
-            index.Indexer2f(.Zigzag64, 2),
-            index.Indexer2f(.Zigzag64, 3),
+            Indexer2f(.Morton64, 2),
+            Indexer2f(.Morton64, 4),
+            Indexer2f(.Spring64, 2),
+            Indexer2f(.Zigzag64, 2),
+            Indexer2f(.Morton64, 6),
+            Indexer2f(.Spring64, 3),
+            Indexer2f(.Zigzag64, 3),
         };
+        var comp_table_str = try std.ArrayList(u8).initCapacity(allocator, 4096);
+        defer comp_table_str.deinit(allocator);
         inline for (CompIndexers) |Indexer| {
             try benchmarkTree(
                 Indexer,
-                st.SquareTree(Indexer, V, u32),
+                SquareTree(Indexer, V, u32),
                 allocator,
                 io,
+                &comp_table_str,
                 ext_overlap_amount,
                 ext_overlap_scale,
                 near_search_k,
                 near_search_amount,
                 near_search_scale,
+                stat_percentiles[0],
             );
         }
+        std.debug.print("{s}\n", .{comp_table_str.items});
     }
 }
 
 fn benchmarkTree(
     comptime Indexer: type,
     comptime TreeType: type,
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     io: std.Io,
+    table_str: *std.ArrayList(u8),
     ext_overlap_amount: f32,
     ext_overlap_scale: f32,
     near_search_k: u8,
     near_search_amount: f32,
     near_search_scale: f32,
+    percentile: u8,
 ) !void {
     const extent = 10.0;
     var tree = try TreeType.init(allocator, .{ 0, 0 }, .{ extent, extent }, max_capacity, 0);
@@ -410,13 +427,10 @@ fn benchmarkTree(
         });
     }
 
-    const max_occ = try tree.getMaxLeafOccupancy();
-    const stats_str = try table.getStatsTable(allocator);
-    defer allocator.free(stats_str);
-    std.debug.print(
-        "{s}:\nmax leaf {}, overlaps {}, neighbours {}, ext-overlaps {}, size {}B\n{s}\n",
-        .{ Indexer.type_label, max_occ, overlaps, neighbours, ext_overlaps, @sizeOf(TreeType), stats_str },
-    );
+    if (table_str.items.len == 0) {
+        try table.appendHeader(allocator, table_str, "indexer");
+    }
+    try table.appendStatsRow(allocator, table_str, Indexer.type_label, percentile);
 }
 
 /// Stores several columns of same-typed data and provides helpers for computing stats + printing.
@@ -426,12 +440,16 @@ pub fn DataTable(
     comptime headers: [num_cols][]const u8,
     comptime formats: [num_cols][]const u8,
 ) type {
+    const left_fmt = "| {s:<24} |";
+    const max_col_width = 32;
+
     return struct {
         column_data: [num_cols]std.ArrayList(T) = undefined,
+        is_sorted: bool = true,
         num_rows: usize = 0,
         const Self = @This();
 
-        pub fn init(allocator: std.mem.Allocator, capacity: usize) !Self {
+        pub fn init(allocator: Allocator, capacity: usize) !Self {
             var cols: [num_cols]std.ArrayList(T) = undefined;
             var cols_created: usize = 0;
             errdefer for (0..cols_created) |i| cols[i].deinit(allocator);
@@ -442,13 +460,14 @@ pub fn DataTable(
             return .{ .column_data = cols };
         }
 
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+        pub fn deinit(self: *Self, allocator: Allocator) void {
             for (0..num_cols) |i| self.column_data[i].deinit(allocator);
         }
 
         /// Appends a row; returns OutOfMemory if a column is at capacity.
         pub fn addRow(self: *Self, vals: [num_cols]T) !void {
             for (0..num_cols) |j| try self.column_data[j].appendBounded(vals[j]);
+            self.is_sorted = false;
             self.num_rows += 1;
         }
 
@@ -458,50 +477,78 @@ pub fn DataTable(
             self.num_rows = 0;
         }
 
-        /// Sorts column data and gets range + IQR stats for each: { min, q1, q2, q3, max }.
-        /// Doesn't interpolate between indexes: inacurate for a low sample sizes.
-        pub fn computeStats(self: *Self) ?[num_cols][5]T {
+        /// Sorts column data and gets percentile stats for each column.
+        /// Doesn't interpolate between indexes: inaccurate at low sample sizes.
+        pub fn getPercentileStats(self: *Self, percentile: u8) ?[num_cols]T {
             if (self.column_data[0].items.len == 0) return null;
-            var col_stats: [num_cols][5]T = undefined;
+            var col_stats: [num_cols]T = undefined;
             for (0..num_cols) |j| {
                 const items = self.column_data[j].items;
-                std.sort.pdq(T, items, {}, std.sort.asc(T));
-                const min = items[0];
-                const q1 = items[1 * items.len / 4];
-                const q2 = items[2 * items.len / 4];
-                const q3 = items[3 * items.len / 4];
-                const max = items[items.len - 1];
-                col_stats[j] = .{ min, q1, q2, q3, max };
+                if (!self.is_sorted) std.sort.pdq(T, items, {}, std.sort.asc(T));
+                col_stats[j] = items[percentile * items.len / 100];
             }
+            self.is_sorted = true;
             return col_stats;
         }
 
-        /// Builds a multi-line string representing a table's stats.
         /// Caller owns the returned slice.
-        pub fn getStatsTable(self: *Self, allocator: std.mem.Allocator) ![]u8 {
-            var string_list = try std.ArrayList(u8).initCapacity(allocator, @as(usize, num_cols) * 64);
-            errdefer string_list.deinit(allocator);
-            const col_stats = self.computeStats() orelse return error.NoValues;
-            try string_list.appendSlice(allocator, "|     |");
+        pub fn appendHeader(
+            _: Self,
+            allocator: Allocator,
+            str_list: *std.ArrayList(u8),
+            left_header: []const u8,
+        ) !void {
+            var left_buf: [max_col_width]u8 = undefined;
+            const left_str = try std.fmt.bufPrint(&left_buf, left_fmt, .{left_header});
+            try str_list.appendSlice(allocator, left_str);
             for (0..num_cols) |j| {
-                try string_list.appendSlice(allocator, headers[j]);
-                try string_list.append(allocator, '|');
+                try str_list.appendSlice(allocator, headers[j]);
+                try str_list.append(allocator, '|');
             }
-            const row_titles: [5][]const u8 = .{ " min ", " q1  ", " q2  ", " q3  ", " max " };
-            var stat_buf: [32]u8 = undefined;
-            for (0..5) |i| {
-                try string_list.appendSlice(allocator, "\n|");
-                try string_list.appendSlice(allocator, row_titles[i]);
-                try string_list.append(allocator, '|');
-                inline for (0..num_cols) |j| {
-                    const cell_val = col_stats[j][i];
-                    const stat_str = try std.fmt.bufPrint(&stat_buf, formats[j], .{cell_val});
-                    try string_list.appendSlice(allocator, stat_str);
-                    try string_list.append(allocator, '|');
-                }
+            try str_list.append(allocator, '\n');
+        }
+
+        // caller owns the returned memory
+        pub fn appendStatsRow(
+            self: *Self,
+            allocator: Allocator,
+            str_list: *std.ArrayList(u8),
+            row_title: []const u8,
+            pct: u8,
+        ) !void {
+            const col_stats = self.getPercentileStats(pct) orelse return error.NoValues;
+            var left_buf: [max_col_width]u8 = undefined;
+            const left_str = try std.fmt.bufPrint(&left_buf, left_fmt, .{row_title});
+            try str_list.appendSlice(allocator, left_str);
+            var fmt_buf: [max_col_width]u8 = undefined;
+            inline for (0..num_cols) |i| {
+                const cell_val = col_stats[i];
+                const stat_str = try std.fmt.bufPrint(&fmt_buf, formats[i], .{cell_val});
+                try str_list.appendSlice(allocator, stat_str);
+                try str_list.append(allocator, '|');
             }
-            try string_list.append(allocator, '\n');
-            return string_list.toOwnedSlice(allocator);
+            try str_list.append(allocator, '\n');
+        }
+
+        /// Builds a multi-line string of column stats: one row for each percentile.
+        /// Caller owns the returned slice.
+        pub fn getStatsTable(
+            self: *Self,
+            allocator: Allocator,
+            left_header: []const u8, // header for the left-most column
+            percentiles: []const u8, // numeric values, e.g. {50, 95}
+        ) ![]u8 {
+            const reserve_size = max_col_width * @as(usize, num_cols) * (1 + percentiles.len);
+            var str_list = try std.ArrayList(u8).initCapacity(allocator, reserve_size);
+            errdefer str_list.deinit(allocator);
+            try self.appendHeader(allocator, &str_list, left_header);
+            for (percentiles) |pct| {
+                var buf: [8]u8 = undefined;
+                const title = try std.fmt.bufPrint(&buf, "p{d:2}", .{pct});
+                try self.appendStatsRow(allocator, &str_list, title, pct);
+            }
+            try str_list.appendSlice(allocator, "\n");
+            return str_list.toOwnedSlice(allocator);
         }
     };
 }
