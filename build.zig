@@ -14,12 +14,21 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
 
-    // TODO: bring this back but make sure it's not part of the regular build step
-    // const bench_exe = b.addExecutable(.{
-    //     .name = "zgrid-bench",
-    //     // ...
-    // });
-    // const run_bench = b.addRunArtifact(bench_exe);
-    // const bench_step = b.step("bench", "Run benchmarks");
-    // bench_step.dependOn(&run_bench.step);
+    const exe = b.addExecutable(.{
+        .name = "zgrid-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/zgrid_bench.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "zgrid", .module = mod }},
+        }),
+    });
+    b.installArtifact(exe);
+    const run_step = b.step("bench", "Run benchmarks");
+    const run_cmd = b.addRunArtifact(exe);
+    run_step.dependOn(&run_cmd.step);
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
 }
