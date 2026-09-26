@@ -5,6 +5,7 @@ const stats = @import("maths/stats.zig");
 const vol = @import("maths/volume.zig");
 const para = @import("parallel.zig");
 const math = std.math;
+const timer = std.Io.Clock.awake;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const AtomicRangeIter = para.AtomicRangeIter;
@@ -12,6 +13,14 @@ const Vec2f = calc.Vec2f;
 const Ball2f = vol.Ball2f;
 const Box2f = vol.Box2f;
 const OrientedBox2f = vol.OrientedBox2f;
+
+const TimeStats = stats.DataTable(
+    f64,
+    5,
+    "| {s:8} |",
+    .{ "  index ", "    mhe ", "  count ", " bv_low ", "  bv_hi " },
+    .{ "{d:>8.2}", "{d:>8.2}", "{d:>8.2}", "{d:>8.2}", "{d:>8.2}" },
+);
 
 /// A data structure that stores volumes + client IDs within an indexed region.
 /// Uses a recursive indexer to build hierachies of bounding volumes above leaf nodes.
@@ -22,19 +31,26 @@ pub fn SquareTree(
 ) type {
     return struct {
         indexer: Indexer,
-        num_volumes: usize = 0, // number of volumes currently stored
-        max_half_extent: Vec2f = @splat(0), // largest half-extent of any stored volume
-        bounds_valid: bool = false, // false if bounds need to be updated
-        node_bvs: [depth][]Box2f, // BVs for all nodes
-        leaf_data: []Volume, // all volumes, sorted by leaf index
-        leaf_ids: []ClientId, // client ids for leaf_data, in the same order
-        leaf_starts: []StartIndex, // CSR offsets: leaf i owns leaf_data[starts[i]..starts[i + 1]]
-        staged_data: []Volume, // volumes in insertion order, unsorted
-        staged_ids: []ClientId, // client ids for staged_data, in the same order
-        staged_indexes: []CurveIndex, // leaf indexes for staged volumes in the same order
-        scratch_a: []CurveIndex, // scratch buffer A - for BFS search
-        scratch_b: []CurveIndex, // scratch buffer B - for BFS search
+        bounds_valid: bool = false,
         max_async_workers: u16,
+        max_half_extent: Vec2f = @splat(0),
+        num_volumes: usize = 0,
+        node_bvs: [depth][]Box2f,
+        leaf_ids: []ClientId,
+        leaf_vols: []Volume,
+        leaf_starts: []StartIndex, // leaf i owns leaf_data[starts[i]..starts[i + 1]]
+        staged_ids: []ClientId, // client IDs in insertion order
+        staged_vols: []Volume, // volumes in insertion order
+        staged_indexes: []CurveIndex, // leaf indexes in insertion order
+        // TODO: consider combining below into a single u8 slice (re-slice and cast as needed)
+        scratch_a: []CurveIndex, // heap-allocated memory mutated in query methods
+        scratch_b: []CurveIndex, // ditto
+        time_stats: TimeStats,
+        t_build_index: f64 = 0.0,
+        t_build_mhe: f64 = 0.0,
+        t_build_count: f64 = 0.0,
+        t_build_bv_low: f64 = 0.0,
+        t_build_bv_hi: f64 = 0.0,
 
         pub const Error = error{
             InputLengthMismatch,
@@ -88,19 +104,6 @@ pub fn SquareTree(
                 return Error.CapacityTooLarge;
             }
             const indexer = try Indexer.init(bound_1, bound_2);
-            const leaf_data = try allocator.alloc(Volume, max_capacity);
-            errdefer allocator.free(leaf_data);
-            const leaf_ids = try allocator.alloc(ClientId, max_capacity);
-            errdefer allocator.free(leaf_ids);
-            const leaf_starts = try allocator.alloc(StartIndex, num_leaves + 1);
-            errdefer allocator.free(leaf_starts);
-            @memset(leaf_starts, 0);
-            const staged_data = try allocator.alloc(Volume, max_capacity);
-            errdefer allocator.free(staged_data);
-            const staged_ids = try allocator.alloc(ClientId, max_capacity);
-            errdefer allocator.free(staged_ids);
-            const staged_indexes = try allocator.alloc(CurveIndex, max_capacity);
-            errdefer allocator.free(staged_indexes);
             var node_bvs: [depth][]Box2f = undefined;
             var levels_allocated: usize = 0;
             errdefer for (node_bvs[0..levels_allocated]) |s| allocator.free(s);
@@ -108,6 +111,22 @@ pub fn SquareTree(
                 node_bvs[lvl] = try allocator.alloc(Box2f, nodes_in_level[lvl]);
                 levels_allocated += 1;
             }
+
+            const leaf_data = try allocator.alloc(Volume, max_capacity);
+            errdefer allocator.free(leaf_data);
+            const leaf_ids = try allocator.alloc(ClientId, max_capacity);
+            errdefer allocator.free(leaf_ids);
+            const leaf_starts = try allocator.alloc(StartIndex, num_leaves + 1);
+            errdefer allocator.free(leaf_starts);
+            @memset(leaf_starts, 0);
+
+            const staged_data = try allocator.alloc(Volume, max_capacity);
+            errdefer allocator.free(staged_data);
+            const staged_ids = try allocator.alloc(ClientId, max_capacity);
+            errdefer allocator.free(staged_ids);
+            const staged_indexes = try allocator.alloc(CurveIndex, max_capacity);
+            errdefer allocator.free(staged_indexes);
+
             // scratch buffer scales with number of workers (will be divided in parallel methods)
             const cpus: u16 = @truncate(@max(1, (try std.Thread.getCpuCount()) -| 1));
             const max_workers = if (max_async_workers > 0) @min(max_async_workers, cpus) else cpus;
@@ -115,18 +134,20 @@ pub fn SquareTree(
             errdefer allocator.free(scratch_buf_a);
             const scratch_buf_b = try allocator.alloc(CurveIndex, max_workers * num_leaves);
             errdefer allocator.free(scratch_buf_b);
+
             return Self{
                 .indexer = indexer,
+                .max_async_workers = max_workers,
                 .node_bvs = node_bvs,
-                .leaf_data = leaf_data,
                 .leaf_ids = leaf_ids,
+                .leaf_vols = leaf_data,
                 .leaf_starts = leaf_starts,
-                .staged_data = staged_data,
                 .staged_ids = staged_ids,
+                .staged_vols = staged_data,
                 .staged_indexes = staged_indexes,
                 .scratch_a = scratch_buf_a,
                 .scratch_b = scratch_buf_b,
-                .max_async_workers = max_workers,
+                .time_stats = try .init(allocator, 1000),
             };
         }
 
@@ -136,10 +157,10 @@ pub fn SquareTree(
             allocator.free(self.scratch_b);
             allocator.free(self.staged_indexes);
             allocator.free(self.staged_ids);
-            allocator.free(self.staged_data);
+            allocator.free(self.staged_vols);
             allocator.free(self.leaf_starts);
             allocator.free(self.leaf_ids);
-            allocator.free(self.leaf_data);
+            allocator.free(self.leaf_vols);
         }
 
         /// Adds volumes to the grid and stores their associated client ids (order must match).
@@ -150,9 +171,9 @@ pub fn SquareTree(
             client_ids: []const ClientId,
         ) Error!void {
             const n = self.num_volumes;
-            if (n + vols.len > self.staged_data.len) return Error.TreeCapacityExceeded;
+            if (n + vols.len > self.staged_vols.len) return Error.TreeCapacityExceeded;
             if (vols.len != client_ids.len) return Error.InputLengthMismatch;
-            @memcpy(self.staged_data[n..][0..vols.len], vols);
+            @memcpy(self.staged_vols[n..][0..vols.len], vols);
             @memcpy(self.staged_ids[n..][0..client_ids.len], client_ids);
             self.num_volumes += vols.len;
             self.bounds_valid = false;
@@ -172,8 +193,10 @@ pub fn SquareTree(
         /// Sorts staged volumes into their final positions, then updates all nodes' BVs.
         /// Does work in parallel if the io implementation supports it; not thread-safe.
         pub fn buildParallel(self: *Self, io: Io) !void {
+            const t_enter = timer.now(io);
             var group: Io.Group = .init;
             errdefer group.cancel(io);
+
             // first index points and update max-half-extent (if compressed)
             const index_workers = @min(max_idx_workers, self.max_async_workers);
             var worker_mhes: [max_idx_workers]Vec2f = undefined;
@@ -183,11 +206,18 @@ pub fn SquareTree(
                 group.async(io, indexStagedVolumes, args);
             }
             try group.await(io);
+            const t_index = timer.now(io);
+
+            // update max-half-extent
             var mhe: Vec2f = @splat(0);
             for (0..index_workers) |i| mhe = @max(mhe, worker_mhes[i]);
             self.max_half_extent = mhe;
+            const t_mhe = timer.now(io);
+
             // then count-sort
             try self.countSortStagedVolumes();
+            const t_count = timer.now(io);
+
             const bv_top_nodes = nodes_in_level[bv_top_lvl];
             const target_parts = update_bv_parts_per_worker * @as(usize, self.max_async_workers);
             const parts = @min(bv_top_nodes, math.ceilPowerOfTwoAssert(usize, target_parts));
@@ -198,12 +228,20 @@ pub fn SquareTree(
                 group.async(io, updateSubtreeBvsWorker, .{ self, bv_top_lvl, &range_iter });
             }
             try group.await(io);
+            const t_bv_low = timer.now(io);
             // build upper levels' bounding volumes serially
             var lvl = bv_top_lvl;
             while (lvl > 0) {
                 lvl -= 1;
                 self.updateLevelBvs(lvl, 0, nodes_in_level[lvl]);
             }
+            const t_bv_hi = timer.now(io);
+
+            self.t_build_index += stats.elapsedUs(t_enter, t_index);
+            self.t_build_mhe += stats.elapsedUs(t_index, t_mhe);
+            self.t_build_count += stats.elapsedUs(t_mhe, t_count);
+            self.t_build_bv_low += stats.elapsedUs(t_count, t_bv_low);
+            self.t_build_bv_hi += stats.elapsedUs(t_bv_low, t_bv_hi);
             self.bounds_valid = true;
         }
 
@@ -212,7 +250,7 @@ pub fn SquareTree(
             var mhe: Vec2f = @splat(0);
             while (range_iter.next()) |r| {
                 for (r.start..r.end) |i| {
-                    const v = self.staged_data[i];
+                    const v = self.staged_vols[i];
                     const leaf_index = self.indexer.getLeafIndexForPoint(v.getCentre());
                     self.staged_indexes[i] = leaf_index;
                     if (compressed) {
@@ -259,12 +297,12 @@ pub fn SquareTree(
             }
             // scatter staged vols + ids to their final position
             for (
-                self.staged_data[0..num_vols],
+                self.staged_vols[0..num_vols],
                 self.staged_ids[0..num_vols],
                 self.staged_indexes[0..num_vols],
             ) |v, id, leaf_index| {
                 const cursor = &self.leaf_starts[@as(usize, leaf_index) + 1];
-                self.leaf_data[cursor.*] = v;
+                self.leaf_vols[cursor.*] = v;
                 self.leaf_ids[cursor.*] = id;
                 cursor.* += 1;
             }
@@ -279,7 +317,7 @@ pub fn SquareTree(
                 const num_subtrees = range.end - range.start;
                 for (range.start * num_leaf_succs..range.end * num_leaf_succs) |i| {
                     var box = vol.empty_box;
-                    for (self.leaf_data[self.leaf_starts[i]..self.leaf_starts[i + 1]]) |v| {
+                    for (self.leaf_vols[self.leaf_starts[i]..self.leaf_starts[i + 1]]) |v| {
                         box = vol.getBoundingBox(box, v);
                     }
                     leaf_bvs[i] = box;
@@ -308,6 +346,21 @@ pub fn SquareTree(
 
         /// Removes all volumes stored in leaf-nodes of the grid.
         pub fn clear(self: *Self) void {
+            // TODO: extend timing stats to break-down other methods in more detail
+            // they might be invoked several times per tick, so clear() is a reasonable reset point
+            self.time_stats.addRow(.{
+                self.t_build_index,
+                self.t_build_mhe,
+                self.t_build_count,
+                self.t_build_bv_low,
+                self.t_build_bv_hi,
+            });
+            self.t_build_index = 0;
+            self.t_build_mhe = 0;
+            self.t_build_count = 0;
+            self.t_build_bv_low = 0;
+            self.t_build_bv_hi = 0;
+
             self.bounds_valid = false;
             self.max_half_extent = @splat(0);
             self.num_volumes = 0;
@@ -515,7 +568,7 @@ pub fn SquareTree(
                         scratch_a,
                         scratch_b,
                         self.leaf_ids[i],
-                        self.leaf_data[i],
+                        self.leaf_vols[i],
                         vol_index.leaf,
                         vol_index.offset + 1,
                     );
@@ -724,7 +777,7 @@ pub fn SquareTree(
         fn getLeafVolumes(self: *const Self, leaf_num: CurveIndex) []const Volume {
             const start = self.leaf_starts[leaf_num];
             const end = self.leaf_starts[@as(usize, leaf_num) + 1];
-            return self.leaf_data[start..end];
+            return self.leaf_vols[start..end];
         }
 
         /// Does a binary search to find the leaf associated with a flat index (for leaf_data).

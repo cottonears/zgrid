@@ -20,6 +20,18 @@ pub fn printErrorMessageForRandomSeed(seed: u64) void {
     std.debug.print("Error when testing with random data; seed = {d}\n", .{seed});
 }
 
+pub fn elapsedMs(t1: std.Io.Timestamp, t2: std.Io.Timestamp) f64 {
+    return elapsedNs(t1, t2) / @as(f64, @floatCast(std.time.ns_per_ms));
+}
+
+pub fn elapsedNs(t1: std.Io.Timestamp, t2: std.Io.Timestamp) f64 {
+    return @floatFromInt(std.Io.Timestamp.durationTo(t1, t2).toNanoseconds());
+}
+
+pub fn elapsedUs(t1: std.Io.Timestamp, t2: std.Io.Timestamp) f64 {
+    return elapsedNs(t1, t2) / @as(f64, @floatCast(std.time.ns_per_us));
+}
+
 /// Stores several columns of same-typed data and provides helpers for computing stats + printing.
 pub fn DataTable(
     comptime T: type,
@@ -191,6 +203,8 @@ pub const ProbDensityFunc = union(enum) {
     }
 };
 
+/// Container for test volumes (randomly-generated or loaded from a file).
+/// TODO: add test lines!
 pub const TestVolumes = struct {
     balls: std.ArrayList(Ball2f),
     boxes: std.ArrayList(Box2f),

@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const zgrid = @import("zgrid");
 const calc = zgrid.calc;
+const stats = zgrid.stats;
 const volume = zgrid.volume;
 const timer = std.Io.Clock.awake;
 const Allocator = std.mem.Allocator;
@@ -34,7 +35,37 @@ var output_dir: ?[]const u8 = null;
 var random_vols: TestVolumes = undefined;
 var num_trials: u8 = 100;
 
-/// Fetches the value following a flag
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.arena.allocator();
+    var args_iter = try ArgsIter.initAllocator(init.minimal.args, allocator);
+    defer args_iter.deinit();
+    _ = args_iter.next(); // skip the program name
+    try processArgs(init.io, &args_iter);
+
+    if (input_file) |file| {
+        random_vols = try TestVolumes.initCsv(allocator, init.io, file);
+        std.debug.print(
+            "Running benchmarks using volumes from '{s}' (trials = {})...\n",
+            .{ file, num_trials },
+        );
+    } else { // default built-in benchmark
+        const num_vols = 20_000;
+        const pos_dist: ProbDensityFunc = .{ .normal = .{ .mean = 5.0, .stddev = 1.5 } };
+        const size_dist: ProbDensityFunc = .{ .uniform = .{ .min = 0.001, .max = 0.05 } };
+        var prng = std.Random.DefaultPrng.init(0);
+        random_vols = try TestVolumes.initRandom(allocator, prng.random(), num_vols, size_dist, pos_dist);
+        std.debug.print(
+            "Running benchmarks for {} random vols (trials = {})...\n\n",
+            .{ num_vols, num_trials },
+        );
+    }
+    defer random_vols.deinit(allocator);
+
+    try benchmarkOverlapChecks(allocator, init.io);
+    try benchmarkIndexing(allocator, init.io);
+    try benchmarkSquareTrees(allocator, init.io);
+}
+
 fn nextArgValue(args_iter: *ArgsIter, flag: []const u8) ![:0]const u8 {
     return args_iter.next() orelse {
         std.debug.print("Missing value for '{s}'.\n{s}", .{ flag, usage_msg });
@@ -70,35 +101,6 @@ fn processArgs(io: std.Io, args_iter: *ArgsIter) !void {
             return error.UnrecognisedArgument;
         }
     }
-}
-
-pub fn main(init: std.process.Init) !void {
-    const allocator = init.arena.allocator();
-    var args_iter = try ArgsIter.initAllocator(init.minimal.args, allocator);
-    defer args_iter.deinit();
-    _ = args_iter.next(); // skip the program name
-    try processArgs(init.io, &args_iter);
-
-    if (input_file) |file| {
-        random_vols = try TestVolumes.initCsv(allocator, init.io, file);
-        std.debug.print("Running benchmarks using volumes loaded from '{s}'...\n", .{file});
-    } else { // default built-in benchmark
-        const num_vols = 20_000;
-        const pos_dist: ProbDensityFunc = .{ .normal = .{ .mean = 5.0, .stddev = 1.5 } };
-        const size_dist: ProbDensityFunc = .{ .uniform = .{ .min = 0.001, .max = 0.05 } };
-        var prng = std.Random.DefaultPrng.init(0);
-        random_vols = try TestVolumes.initRandom(allocator, prng.random(), num_vols, size_dist, pos_dist);
-        std.debug.print("Running benchmarks for {} vols...\n\n", .{num_vols});
-    }
-    defer random_vols.deinit(allocator);
-
-    try benchmarkOverlapChecks(allocator, init.io);
-    try benchmarkIndexing(allocator, init.io);
-    try benchmarkSquareTrees(allocator, init.io);
-}
-
-fn elapsedNs(t1: std.Io.Timestamp, t2: std.Io.Timestamp) f64 {
-    return @floatFromInt(std.Io.Timestamp.durationTo(t1, t2).toNanoseconds());
 }
 
 fn benchmarkOverlapChecks(allocator: Allocator, io: std.Io) !void {
@@ -161,11 +163,11 @@ fn benchmarkOverlapChecks(allocator: Allocator, io: std.Io) !void {
         }
         const t_5 = timer.now(io);
         table.addRow(.{
-            elapsedNs(t_0, t_1) / ball_checks,
-            elapsedNs(t_1, t_2) / box_checks,
-            elapsedNs(t_2, t_3) / mixed_checks,
-            elapsedNs(t_3, t_4) / box_checks,
-            elapsedNs(t_4, t_5) / box_checks,
+            stats.elapsedNs(t_0, t_1) / ball_checks,
+            stats.elapsedNs(t_1, t_2) / box_checks,
+            stats.elapsedNs(t_2, t_3) / mixed_checks,
+            stats.elapsedNs(t_3, t_4) / box_checks,
+            stats.elapsedNs(t_4, t_5) / box_checks,
         });
     }
 
@@ -179,12 +181,12 @@ fn benchmarkOverlapChecks(allocator: Allocator, io: std.Io) !void {
 fn benchmarkIndexing(allocator: Allocator, io: std.Io) !void {
     const IndexerTypes = [_]type{
         Indexer2f(.Morton16, 1),
+        Indexer2f(.Zigzag16, 1),
         Indexer2f(.Morton32, 1),
         Indexer2f(.Morton64, 1),
+        Indexer2f(.Zigzag64, 1),
         Indexer2f(.Morton128, 1),
         Indexer2f(.Morton256, 1),
-        Indexer2f(.Zigzag16, 1),
-        Indexer2f(.Zigzag64, 1),
         Indexer2f(.Zigzag256, 1),
     };
     const headers: [2][]const u8 = .{ " time (ns/pt) ", " inter-leaf dist " };
@@ -227,7 +229,7 @@ fn benchmarkIndexing(allocator: Allocator, io: std.Io) !void {
                 indexes[i] = indexer.getLeafIndexForPoint(b.getCentre());
             }
             const t_1 = timer.now(io);
-            const avg_t = elapsedNs(t_0, t_1) / @as(f64, @floatFromInt(indexes.len));
+            const avg_t = stats.elapsedNs(t_0, t_1) / @as(f64, @floatFromInt(indexes.len));
             table.addRow(.{ avg_t, avg_il_dist });
         }
 
@@ -421,14 +423,14 @@ fn benchmarkTree(
         const t_4 = timer.now(io);
         ext_overlaps = (try tree.findExtOverlapsParallel(io, pair_buf, ext_query_ids, ext_query_vols)).len;
         const t_5 = timer.now(io);
-        const total_ns = elapsedNs(t_0, t_5);
+        const total_ms = stats.elapsedMs(t_0, t_5);
         table.addRow(.{
-            100 * elapsedNs(t_0, t_1) / total_ns,
-            100 * elapsedNs(t_1, t_2) / total_ns,
-            100 * elapsedNs(t_2, t_3) / total_ns,
-            100 * elapsedNs(t_4, t_5) / total_ns,
-            100 * elapsedNs(t_3, t_4) / total_ns,
-            total_ns / 1_000_000,
+            100 * stats.elapsedMs(t_0, t_1) / total_ms,
+            100 * stats.elapsedMs(t_1, t_2) / total_ms,
+            100 * stats.elapsedMs(t_2, t_3) / total_ms,
+            100 * stats.elapsedMs(t_4, t_5) / total_ms,
+            100 * stats.elapsedMs(t_3, t_4) / total_ms,
+            total_ms,
         });
     }
 
@@ -436,4 +438,8 @@ fn benchmarkTree(
         try table.appendHeader(allocator, table_str, "indexer");
     }
     try table.appendStatsRow(allocator, table_str, Indexer.type_label, percentile);
+
+    const times = try tree.time_stats.getStatsTable(allocator, "step", &stat_percentiles);
+    defer allocator.free(times);
+    std.debug.print("{s}:\n{s}\n", .{ Indexer.type_label, times });
 }
