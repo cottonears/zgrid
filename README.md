@@ -254,7 +254,7 @@ This includes the overlap queries, which modify internal scratch buffers while s
 - [X] Move benchmark to a separate repo to reduce compile times.
 - [X] Bring the benchmark back in a way that won't affect importers' compile times.
 - [X] Look into what is going on with the volume alignment + sizes, may need to go to scalar floats or simple arrays.
-- [ ] Implement `vol.getExpanded(translation)` (makes conservative BVs for moving bodies); helper to avoid tunnelling.
+- [X] Implement `vol.getExpanded(translation)` (makes conservative BVs for moving bodies); helper to avoid tunnelling.
 - [x] Revamp this readme.
 - [ ] Set up CI (`zig build test` on push).
 
