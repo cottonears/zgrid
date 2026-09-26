@@ -5,12 +5,6 @@ const math = std.math;
 pub const Vec2f = @Vector(2, f32);
 const ProbDensityFunc = calc.ProbDensityFunc;
 
-/// Any ball with radius <= 0 is considered empty; choose extreme values to make this obvious.
-pub const empty_ball = Ball2f{
-    .centre = @splat(math.floatMax(f32)),
-    .radius = -math.floatMax(f32),
-};
-
 /// Any box where max[0] < min[0] is considered empty; choose extreme values to make this obvious.
 pub const empty_box = Box2f{
     .min = @splat(math.floatMax(f32)),
@@ -23,10 +17,6 @@ pub const Ball2f = struct {
     radius: f32,
     const Self = @This();
 
-    pub fn getBoundingBall(self: Self) Ball2f {
-        return self;
-    }
-
     pub fn getBoundingBox(self: Self) Box2f {
         if (self.isEmpty()) return empty_box;
         const disp: Vec2f = @splat(self.radius);
@@ -38,7 +28,13 @@ pub const Ball2f = struct {
         return self.centre;
     }
 
-    // TODO: change to getTransformed and allow for translation + scale
+    pub fn getExpanded(self: Self, translation: Vec2f) Ball2f {
+        return .{
+            .centre = self.centre + calc.scaledVec(0.5, translation),
+            .radius = self.radius + 0.5 * calc.norm(translation),
+        };
+    }
+
     pub fn getScaled(self: Self, factor: f32) Ball2f {
         return .{
             .centre = self.centre,
@@ -57,12 +53,6 @@ pub const Box2f = struct {
     max: [2]f32,
     const Self = @This();
 
-    pub fn getBoundingBall(self: Self) Ball2f {
-        if (self.isEmpty()) return empty_ball;
-        const r = 0.5 * calc.norm(self.max - self.min);
-        return .{ .centre = self.getCentre(), .radius = r };
-    }
-
     pub fn getBoundingBox(self: Self) Box2f {
         return self;
     }
@@ -72,7 +62,15 @@ pub const Box2f = struct {
         return calc.scaledVec(0.5, vec_sum);
     }
 
-    // TODO: change to getTransformed and allow for translation + scale
+    pub fn getExpanded(self: Self, translation: Vec2f) Box2f {
+        const t_min = @as(Vec2f, self.min) + translation;
+        const t_max = @as(Vec2f, self.max) + translation;
+        return .{
+            .min = @min(self.min, t_min),
+            .max = @max(self.max, t_max),
+        };
+    }
+
     pub fn getScaled(self: Self, factor: f32) Box2f {
         const c = self.getCentre();
         const min_vec = @as(Vec2f, self.min);
@@ -88,16 +86,10 @@ pub const Box2f = struct {
 
 /// An oriented bounding box.
 pub const OrientedBox2f = struct {
-    centre: [2]f32,
     axis: [2]f32, // unit vector along the box's local x-axis
+    centre: [2]f32,
     half_extents: [2]f32,
     const Self = @This();
-
-    pub fn getBoundingBall(self: Self) Ball2f {
-        if (self.isEmpty()) return empty_ball;
-        const r = calc.norm(self.half_extents);
-        return .{ .centre = self.centre, .radius = r };
-    }
 
     pub fn getBoundingBox(self: Self) Box2f {
         if (self.isEmpty()) return empty_box;
@@ -107,6 +99,10 @@ pub const OrientedBox2f = struct {
         const ay = @abs(Vec2f{ -self.axis[1], self.axis[0] });
         const extent = calc.scaledVec(hx, ax) + calc.scaledVec(hy, @abs(ay));
         return .{ .min = self.centre - extent, .max = self.centre + extent };
+    }
+
+    pub fn getCentre(self: Self) Vec2f {
+        return self.centre;
     }
 
     pub fn getCorners(self: Self) [4]Vec2f {
@@ -121,11 +117,20 @@ pub const OrientedBox2f = struct {
         };
     }
 
-    pub fn getCentre(self: Self) Vec2f {
-        return self.centre;
+    pub fn getExpanded(self: Self, translation: Vec2f) OrientedBox2f {
+        const axis_y = Vec2f{ -self.axis[1], self.axis[0] };
+        const half_trans = calc.scaledVec(0.5, translation);
+        const he_growth = Vec2f{
+            @abs(calc.dot(self.axis, half_trans)),
+            @abs(calc.dot(axis_y, half_trans)),
+        };
+        return .{
+            .axis = self.axis,
+            .centre = self.centre + calc.scaledVec(0.5, translation),
+            .half_extents = self.half_extents + he_growth,
+        };
     }
 
-    // TODO: change to getTransformed and allow for translation + scale
     pub fn getScaled(self: Self, factor: f32) OrientedBox2f {
         return .{
             .centre = self.centre,

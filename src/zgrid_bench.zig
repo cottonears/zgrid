@@ -2,8 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const zgrid = @import("zgrid");
 const calc = zgrid.calc;
-const stats = zgrid.stats;
+const prob = zgrid.prob;
 const volume = zgrid.volume;
+const test_utils = zgrid.test_utils;
 const timer = std.Io.Clock.awake;
 const Allocator = std.mem.Allocator;
 const ArgsIter = std.process.Args.Iterator;
@@ -12,9 +13,9 @@ const Ball2f = zgrid.Ball2f;
 const Box2f = zgrid.Box2f;
 const Line2f = zgrid.Line2f;
 const OrientedBox2f = zgrid.OrientedBox2f;
-const DataTable = zgrid.stats.DataTable;
-const ProbDensityFunc = zgrid.stats.ProbDensityFunc;
-const TestVolumes = zgrid.stats.TestVolumes;
+const DataTable = zgrid.test_utils.DataTable;
+const ProbDensityFunc = zgrid.prob.ProbDensityFunc;
+const TestVolumes = zgrid.test_utils.TestVolumes;
 const Indexer2f = zgrid.Indexer2f;
 const SquareTree = zgrid.SquareTree;
 
@@ -163,11 +164,11 @@ fn benchmarkOverlapChecks(allocator: Allocator, io: std.Io) !void {
         }
         const t_5 = timer.now(io);
         table.addRow(.{
-            stats.elapsedNs(t_0, t_1) / ball_checks,
-            stats.elapsedNs(t_1, t_2) / box_checks,
-            stats.elapsedNs(t_2, t_3) / mixed_checks,
-            stats.elapsedNs(t_3, t_4) / box_checks,
-            stats.elapsedNs(t_4, t_5) / box_checks,
+            test_utils.elapsedNs(t_0, t_1) / ball_checks,
+            test_utils.elapsedNs(t_1, t_2) / box_checks,
+            test_utils.elapsedNs(t_2, t_3) / mixed_checks,
+            test_utils.elapsedNs(t_3, t_4) / box_checks,
+            test_utils.elapsedNs(t_4, t_5) / box_checks,
         });
     }
 
@@ -229,7 +230,7 @@ fn benchmarkIndexing(allocator: Allocator, io: std.Io) !void {
                 indexes[i] = indexer.getLeafIndexForPoint(b.getCentre());
             }
             const t_1 = timer.now(io);
-            const avg_t = stats.elapsedNs(t_0, t_1) / @as(f64, @floatFromInt(indexes.len));
+            const avg_t = test_utils.elapsedNs(t_0, t_1) / @as(f64, @floatFromInt(indexes.len));
             table.addRow(.{ avg_t, avg_il_dist });
         }
 
@@ -423,13 +424,13 @@ fn benchmarkTree(
         const t_4 = timer.now(io);
         ext_overlaps = (try tree.findExtOverlapsParallel(io, pair_buf, ext_query_ids, ext_query_vols)).len;
         const t_5 = timer.now(io);
-        const total_ms = stats.elapsedMs(t_0, t_5);
+        const total_ms = test_utils.elapsedMs(t_0, t_5);
         table.addRow(.{
-            100 * stats.elapsedMs(t_0, t_1) / total_ms,
-            100 * stats.elapsedMs(t_1, t_2) / total_ms,
-            100 * stats.elapsedMs(t_2, t_3) / total_ms,
-            100 * stats.elapsedMs(t_4, t_5) / total_ms,
-            100 * stats.elapsedMs(t_3, t_4) / total_ms,
+            100 * test_utils.elapsedMs(t_0, t_1) / total_ms,
+            100 * test_utils.elapsedMs(t_1, t_2) / total_ms,
+            100 * test_utils.elapsedMs(t_2, t_3) / total_ms,
+            100 * test_utils.elapsedMs(t_4, t_5) / total_ms,
+            100 * test_utils.elapsedMs(t_3, t_4) / total_ms,
             total_ms,
         });
     }

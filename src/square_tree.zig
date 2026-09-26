@@ -1,9 +1,10 @@
 const std = @import("std");
 const calc = @import("maths/calc.zig");
-const index = @import("maths/index.zig");
-const stats = @import("maths/stats.zig");
+const prob = @import("maths/prob.zig");
 const vol = @import("maths/volume.zig");
+const index = @import("index.zig");
 const para = @import("parallel.zig");
+const test_utils = @import("test_utils.zig");
 const math = std.math;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -885,10 +886,10 @@ test "hex tree overlap box" {
 // TODO: add simple test for external line vs tree volumes
 
 test "tree occupancy counts are accurate" {
-    const seed = stats.getClockBasedRngSeed(testing.io);
+    const seed = test_utils.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);
-    errdefer stats.printErrorMessageForRandomSeed(seed);
-    var pos_dist = stats.ProbDensityFunc{
+    errdefer test_utils.printErrorMessageForRandomSeed(seed);
+    var pos_dist = prob.ProbDensityFunc{
         .normal = .{ .mean = 0.0, .stddev = 1.0 },
     };
     const Indexer = index.Indexer2f(.Zigzag16, 1);

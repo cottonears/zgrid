@@ -4,7 +4,7 @@ const math = std.math;
 pub const GridIndex = u8;
 
 pub const Curve = enum {
-    // TODO: add support for Hilbert curves!
+    // TODO: add support for Hilbert curves! (will need to revise index.getCellBoundaryAtLevel)
     Morton2,
     Morton4,
     Morton8,

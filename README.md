@@ -1,10 +1,12 @@
 # Zgrid
 
-Zgrid is a lightweight library for fast 2D spatial queries in dynamic scenes. It supports axis-aligned bounding-boxes (AABBs), oriented bounding-boxes (OBBs), balls, and lines for overlap and nearest-neighbour queries.
+Zgrid is a lightweight library for fast 2D spatial queries in dynamic scenes.
+It provides queries for overlap detection and and nearest-neighbour searches (measured centre-centre).
+Several primitives are supported: axis-aligned bounding-boxes (AABBs), oriented bounding-boxes (OBBs), balls, and lines.
 
 Zgrid currently provides one data structure, `SquareTree`, for queries in 2D scenes.
 A square tree combines a regular grid with a bounding volume hierarchy (BVH), making it suitable for dynamic scenes with large numbers of objects.
-Indexers can be chosen to make the tree behaves more like a fine uniform grid, or to add further layers of hierarchy to accelerate queries where volumes are unevenly distributed or vary significantly in size.
+Indexers can be chosen to make the tree behave more like a fine uniform grid, or to add further layers of hierarchy to accelerate queries where volumes are unevenly distributed or vary significantly in size.
 Efficient, simple-to-use parallel methods are also provided alongside serial implementations.
 
 Other spatial data structures are planned once the public API of `SquareTree` has stabilised; see the [Roadmap](#roadmap).
@@ -69,7 +71,6 @@ pub fn main(init: std.process.Init) !void {
         .{ .min = .{ 5.3, 9.0 }, .max = .{ 17.0, 11.2 } },
     };
 
-    tree.clear();
     try tree.add(&entity_aabbs, &entity_ids);
     try tree.build();
     var found: usize = 0;
@@ -98,12 +99,14 @@ pub fn main(init: std.process.Init) !void {
     for (nearby) |n| {
         std.debug.print("Neighbour found: id = {d}, dist = {d:.3}.\n", .{ n.id, n.dist });
     }
+
+    tree.clear(); // empties the tree
 }
 ```
 A `SquareTree` is designed to be rebuilt frequently rather than maintained incrementally.
 A typical update cycle is:
 ``` zig
-tree.clear(); // removes previous contents with releasing backing memory
+tree.clear(); // removes previous contents without releasing backing memory
 try tree.add(volumes, ids); // stages new volumes (+ their ids)
 try tree.build(); // indexes the volumes and builds the BVH structure
 ```
@@ -114,8 +117,6 @@ There is a companion project that demonstrates how zgrid can be used for a simpl
 
 ## Volumes
 
-TODO: Don't forget to update the table after addressing TODO in volume.zig!
-
 Zgrid provides several 2D primitives for spatial queries.
 Their fields are all typed as `f32` or `Vec2f` (an alias for `@Vector(2, f32)`). 
 
@@ -123,7 +124,7 @@ Their fields are all typed as `f32` or `Vec2f` (an alias for `@Vector(2, f32)`).
 | --------------- | ----- | ------------ |
 | `Ball2f`        | 12 B  | Fast         |
 | `Box2f`         | 16 B  | Fast         |
-| `Line2f`        | 16 B  | Fast         |
+| `Line2f`        | 16 B  | Average      |
 | `OrientedBox2f` | 24 B  | Average      |
 
 A `SquareTree` stores a single volume type, chosen at compile time.
@@ -157,22 +158,27 @@ Parent bounds are then constructed bottom-up by combining the bounds of their ch
 Node bounds are not constrained to their nominal grid cells and may overlap other nodes at the same level.
 This is intentional: `SquareTree` prioritises fast indexing and rebuilding over maintaining tightly partitioned spatial bounds.
 
-The square tree data structure uses a single slice to store all volumes (from all leaf cells) in a one large block of memory.
+The square tree data structure uses a single slice to store all built volumes in one large block of memory.
 This has the following benefits:
-- The tree allocates heap memory exactly once (on `init`). Adding volumes after initialisation will never trigger a heap allocation, but it may result in a `TreeCapacityExceeded` error if the initial capacity is exhausted.
+- The tree allocates heap memory only within `init`. Adding volumes after initialisation will never trigger an allocation, but may result in a `TreeCapacityExceeded` error if the tree's capacity is exhausted.
 - Volumes within the same leaf are stored in contiguous memory: improving cache locality during queries.
 
 The proportion of the tree's backing slice used by each leaf cell is variable and will adapt as required at runtime.
 This is achieved by using offsets calculated in a counting sort during the `build` step to compactly partition the slice.
-This results in lower memory usage (+ safer runtime behaviour) than a naiive approach where each cell is backed by a separate slice.
+This results in lower memory usage (+ safer runtime behaviour) than a naive approach where each cell is backed by a separate slice.
 
-Overlap queries traverse the tree from coarse nodes at level 0 to towards fine nodes at the leaf level.
+Overlap queries traverse the tree from coarse nodes at level 0 towards fine nodes at the leaf level.
 Since each node covers its children, its entire subtree can be skipped when its BV doesn't intersect the query volume.
 `SquareTree` provides both self-overlap queries and external-overlap queries:
 - `findSelfOverlaps` returns intersecting pairs among volumes stored in the tree.
 - `findExtOverlaps` returns pairs for the query volumes against the volumes stored in the tree. The query volumes can be any of those listed in the [Volumes table](#volumes)
 
 Neighbour queries use a simple expanding-ring search over nearby leaf cells.
+They return an ordered slice of ID + distance where the volume with the closest centre appears first.
+
+Capacity limits:
+- Tree capacity is limited to 16,777,215 volumes.
+- Leaf nodes can hold at most 65,535 volumes each.
 
 
 ## Indexing
@@ -233,7 +239,7 @@ Note the serial and parallel overlap queries will not return pairs in the same o
 If pair ordering is important in your application, you will need to sort the results after querying.
 
 Concurrent calls on the same tree from different client threads is strongly discouraged.
-Most tree methods are not thread safe.
+Overlap queries use an internal scratch buffer and are not thread safe.
 This includes the overlap queries, which modify internal scratch buffers while searching the tree.
 
 
@@ -241,15 +247,15 @@ This includes the overlap queries, which modify internal scratch buffers while s
 - [X] Improve benchmarking reports + tooling (better stats + warmup queries).
 - [X] Finish `findNearestNeighbours` (expanding-ring search).
 - [X] Add `getLeafOccupancyUnderNode` + an indexer helper (e.g. `getLeafSuccessorRange`) to help with workload partitioning.
-- [X] Implement helper for determining suitable number workers + parts for parallel methods.
+- [X] Implement helper for determining suitable number of workers + parts for parallel methods.
 - [X] Add findExtOverlapsSingle.
 - [X] Improve indexing performance.
 - [X] Parallelise build (with a radix sort?).
 - [X] Move benchmark to a separate repo to reduce compile times.
-- [ ] Bring the benchmark back in a way that won't affect importers' compile times.
-- [ ] Look into what is going on with the volume alignment + sizes, may need to go to scalar floats or simple arrays.
-- [ ] Implement `getExpandedVolume(V, vol, velocity, time_step)` (makes conservative BVs for moving bodies); helper to avoid tunnelling.
-- [ ] Revamp this readme.
+- [X] Bring the benchmark back in a way that won't affect importers' compile times.
+- [X] Look into what is going on with the volume alignment + sizes, may need to go to scalar floats or simple arrays.
+- [ ] Implement `vol.getExpanded(translation)` (makes conservative BVs for moving bodies); helper to avoid tunnelling.
+- [x] Revamp this readme.
 - [ ] Set up CI (`zig build test` on push).
 
 ## Roadmap
