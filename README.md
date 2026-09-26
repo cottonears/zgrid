@@ -70,7 +70,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     tree.clear();
-    try tree.addVolumes(&entity_aabbs, &entity_ids);
+    try tree.add(&entity_aabbs, &entity_ids);
     try tree.build();
     var found: usize = 0;
 
@@ -104,7 +104,7 @@ A `SquareTree` is designed to be rebuilt frequently rather than maintained incre
 A typical update cycle is:
 ``` zig
 tree.clear(); // removes previous contents with releasing backing memory
-try tree.addVolumes(volumes, ids); // stages new volumes (+ their ids)
+try tree.add(volumes, ids); // stages new volumes (+ their ids)
 try tree.build(); // indexes the volumes and builds the BVH structure
 ```
 After clearing the tree, you can also `relocate` it to a new position at very low cost.
@@ -147,7 +147,7 @@ The pictured square tree has two levels:
 Note that (in hexadecimal) the first digit of each child cell's index identifies its parent.
 This follows from the use of recursive curves for indexing; see [Indexing](#indexing) for more details.
 
-Volumes are staged when `addVolumes` is called: their geometric data and client IDs are recorded with no further processing.
+Volumes are staged when `add` is called: their geometric data and client IDs are recorded with no further processing.
 Adding volumes is very cheap, so there is no parallel variant of this method.
 
 When `build` is called, each staged volume is assigned to a leaf cell based on its centre.

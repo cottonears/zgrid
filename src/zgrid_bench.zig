@@ -248,7 +248,7 @@ fn benchmarkSquareTrees(allocator: Allocator, io: std.Io) !void {
     const near_search_k: u8 = 5; // each neighbourhood search finds the 5 nearest vols
     const near_search_amount: f32 = 0.05; // number queries = 5% of number of vols
     const near_search_scale: f32 = 0.05; // max query radius = 5% of world extent
-    // NOTE: findSelfOverlaps always checks 100% all stored volumes
+    // NOTE: findSelfOverlaps always checks all stored volumes
     var buf: [256]u8 = undefined;
     const params_str = try std.fmt.bufPrint(
         &buf,
@@ -380,7 +380,7 @@ fn benchmarkTree(
     var n: usize = 0;
     for (0..untimed_trials) |_| {
         tree.clear();
-        try tree.addVolumes(bodies, entity_indexes);
+        try tree.add(bodies, entity_indexes);
         try tree.buildParallel(io);
         n += (try tree.findSelfOverlapsParallel(io, pair_buf)).len;
         for (nbufs, 0..) |*buf, i| buf.* = neighbour_buf[i * neighbour_k ..][0..neighbour_k];
@@ -403,7 +403,7 @@ fn benchmarkTree(
     for (0..num_trials) |_| {
         const t_0 = timer.now(io);
         tree.clear();
-        try tree.addVolumes(bodies, entity_indexes);
+        try tree.add(bodies, entity_indexes);
         const t_1 = timer.now(io);
         try tree.buildParallel(io);
         const t_2 = timer.now(io);
@@ -438,8 +438,4 @@ fn benchmarkTree(
         try table.appendHeader(allocator, table_str, "indexer");
     }
     try table.appendStatsRow(allocator, table_str, Indexer.type_label, percentile);
-
-    // const times = try tree.time_stats.getStatsTable(allocator, "step", &stat_percentiles);
-    // defer allocator.free(times);
-    // std.debug.print("{s}:\n{s}\n", .{ Indexer.type_label, times });
 }
