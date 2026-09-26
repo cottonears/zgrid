@@ -19,7 +19,7 @@ pub const empty_box = Box2f{
 
 /// A circular region in the 2D plane.
 pub const Ball2f = struct {
-    centre: Vec2f,
+    centre: [2]f32,
     radius: f32,
     const Self = @This();
 
@@ -29,8 +29,9 @@ pub const Ball2f = struct {
 
     pub fn getBoundingBox(self: Self) Box2f {
         if (self.isEmpty()) return empty_box;
-        const disp = @as(Vec2f, @splat(self.radius));
-        return .{ .min = self.centre - disp, .max = self.centre + disp };
+        const disp: Vec2f = @splat(self.radius);
+        const c: Vec2f = self.centre;
+        return .{ .min = c - disp, .max = c + disp };
     }
 
     pub fn getCentre(self: Self) Vec2f {
@@ -52,8 +53,8 @@ pub const Ball2f = struct {
 
 /// An axis-aligned rectangular region in the 2D plane.
 pub const Box2f = struct {
-    min: Vec2f,
-    max: Vec2f,
+    min: [2]f32,
+    max: [2]f32,
     const Self = @This();
 
     pub fn getBoundingBall(self: Self) Ball2f {
@@ -67,13 +68,16 @@ pub const Box2f = struct {
     }
 
     pub fn getCentre(self: Self) Vec2f {
-        return calc.scaledVec(0.5, self.min + self.max);
+        const vec_sum = @as(Vec2f, self.min) + @as(Vec2f, self.max);
+        return calc.scaledVec(0.5, vec_sum);
     }
 
     // TODO: change to getTransformed and allow for translation + scale
     pub fn getScaled(self: Self, factor: f32) Box2f {
         const c = self.getCentre();
-        const h = calc.scaledVec(0.5 * factor, self.max - self.min); // note the 0.5
+        const min_vec = @as(Vec2f, self.min);
+        const max_vec = @as(Vec2f, self.max);
+        const h = calc.scaledVec(0.5 * factor, max_vec - min_vec); // note the 0.5
         return .{ .min = c - h, .max = c + h };
     }
 
@@ -84,9 +88,9 @@ pub const Box2f = struct {
 
 /// An oriented bounding box.
 pub const OrientedBox2f = struct {
-    centre: Vec2f,
-    axis: Vec2f, // unit vector along the box's local x-axis
-    half_extents: Vec2f,
+    centre: [2]f32,
+    axis: [2]f32, // unit vector along the box's local x-axis
+    half_extents: [2]f32,
     const Self = @This();
 
     pub fn getBoundingBall(self: Self) Ball2f {
@@ -99,14 +103,15 @@ pub const OrientedBox2f = struct {
         if (self.isEmpty()) return empty_box;
         const hx = self.half_extents[0];
         const hy = self.half_extents[1];
-        const ay = Vec2f{ -self.axis[1], self.axis[0] };
-        const extent = calc.scaledVec(hx, @abs(self.axis)) + calc.scaledVec(hy, @abs(ay));
+        const ax = @abs(@as(Vec2f, self.axis));
+        const ay = @abs(Vec2f{ -self.axis[1], self.axis[0] });
+        const extent = calc.scaledVec(hx, ax) + calc.scaledVec(hy, @abs(ay));
         return .{ .min = self.centre - extent, .max = self.centre + extent };
     }
 
     pub fn getCorners(self: Self) [4]Vec2f {
         const ay = Vec2f{ -self.axis[1], self.axis[0] };
-        const ex = calc.scaledVec(self.half_extents[0], self.axis);
+        const ex = calc.scaledVec(self.half_extents[0], @as(Vec2f, self.axis));
         const ey = calc.scaledVec(self.half_extents[1], ay);
         return .{
             self.centre + ex + ey,
@@ -136,8 +141,8 @@ pub const OrientedBox2f = struct {
 
 /// A zero-width line segment: query only, can't be stored in a tree.
 pub const Line2f = struct {
-    start: Vec2f,
-    end: Vec2f,
+    start: [2]f32,
+    end: [2]f32,
     const Self = @This();
 
     pub fn getBoundingBox(self: Self) Box2f {
@@ -184,13 +189,13 @@ pub fn getBoundingBox(a: anytype, b: anytype) Box2f {
     const box_a = a.getBoundingBox();
     const box_b = b.getBoundingBox();
     return .{
-        .min = @min(box_a.min, box_b.min),
-        .max = @max(box_a.max, box_b.max),
+        .min = @min(@as(Vec2f, box_a.min), @as(Vec2f, box_b.min)),
+        .max = @max(@as(Vec2f, box_a.max), @as(Vec2f, box_b.max)),
     };
 }
 
 fn checkOverlapBallBall(a: Ball2f, b: Ball2f) bool {
-    const vec_diff = a.centre - b.centre;
+    const vec_diff = @as(Vec2f, a.centre) - @as(Vec2f, b.centre);
     const r_sum = a.radius + b.radius;
     return calc.squaredSum(vec_diff) < r_sum * r_sum;
 }
@@ -218,24 +223,28 @@ fn checkOverlapLineBox(line: Line2f, box: Box2f) bool {
 fn checkOverlapLineOrientedBox(line: Line2f, obb: OrientedBox2f) bool {
     const loc_start = calc.transformToFrame(line.start, obb.centre, obb.axis);
     const loc_end = calc.transformToFrame(line.end, obb.centre, obb.axis);
-    return segmentIntersectsBox(loc_start, loc_end, -obb.half_extents, obb.half_extents);
+    const pos_he: Vec2f = obb.half_extents;
+    const neg_he: Vec2f = -pos_he;
+    return segmentIntersectsBox(loc_start, loc_end, neg_he, pos_he);
 }
 
 fn checkOverlapOrientedBoxBall(obb: OrientedBox2f, ball: Ball2f) bool {
     const local = calc.transformToFrame(ball.centre, obb.centre, obb.axis);
-    const d_squared = calc.pointBoxDistSquared(local, -obb.half_extents, obb.half_extents);
+    const pos_he: Vec2f = obb.half_extents;
+    const neg_he: Vec2f = -pos_he;
+    const d_squared = calc.pointBoxDistSquared(local, neg_he, pos_he);
     return d_squared < ball.radius * ball.radius;
 }
 
 fn checkOverlapOrientedBoxBox(obb: OrientedBox2f, box: Box2f) bool {
-    const box_half = calc.scaledVec(0.5, box.max - box.min);
+    const box_half = calc.scaledVec(0.5, @as(Vec2f, box.max) - @as(Vec2f, box.min));
     return checkOverlapOrientedBoxes(
         obb.centre,
         obb.half_extents,
         obb.axis,
         box.getCentre(),
         box_half,
-        Vec2f{ 1, 0 },
+        [2]f32{ 1, 0 },
     );
 }
 
@@ -462,24 +471,6 @@ test "encompassing boxes" {
     const a = Box2f{ .min = .{ -0.139, -0.139 }, .max = .{ 0.139, 0.139 } };
     const b = Box2f{ .min = .{ -0.735, -0.2 }, .max = .{ 0.2, 0.735 } };
     const c = getBoundingBox(a, b);
-    try testing.expectEqual(@min(a.min, b.min), c.min);
-    try testing.expectEqual(@max(a.max, b.max), c.max);
-}
-
-pub const Ball2Test = struct {
-    centre: [2]f32,
-    radius: f32,
-    const Self = @This();
-};
-
-test "volume sizes match readme" {
-    const Types = [_]type{ f32, [2]f32, Vec2f, Ball2f, Ball2Test, Box2f, Line2f, OrientedBox2f };
-    inline for (Types) |V| {
-        std.debug.print(
-            "{s}: align = {}, size = {}\n",
-            .{ @typeName(V), @alignOf(V), @sizeOf(V) },
-        );
-    }
-    // TODO: lollll; change everything in this module to [2]f32 and measure performance difference!
-    // This might lead to a big refactor =/ (but also lots more performance)
+    try testing.expectEqual(@min(@as(Vec2f, a.min), @as(Vec2f, b.min)), c.min);
+    try testing.expectEqual(@max(@as(Vec2f, a.max), @as(Vec2f, b.max)), c.max);
 }

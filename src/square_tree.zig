@@ -161,6 +161,7 @@ pub fn SquareTree(
             allocator.free(self.leaf_starts);
             allocator.free(self.leaf_ids);
             allocator.free(self.leaf_vols);
+            self.time_stats.deinit(allocator);
         }
 
         /// Adds volumes to the grid and stores their associated client ids (order must match).
@@ -178,6 +179,8 @@ pub fn SquareTree(
             self.num_volumes += vols.len;
             self.bounds_valid = false;
         }
+
+        // TODO: add several different add + build combinations and do extensive benchmarks to choose the best among them
 
         /// Sorts staged volumes into their final positions, then updates all nodes' BVs.
         /// Single-threaded but not thread-safe.
@@ -255,7 +258,7 @@ pub fn SquareTree(
                     self.staged_indexes[i] = leaf_index;
                     if (compressed) {
                         const bb = v.getBoundingBox();
-                        const he = calc.scaledVec(0.5, bb.max - bb.min);
+                        const he = calc.scaledVec(0.5, @as(Vec2f, bb.max) - @as(Vec2f, bb.min));
                         mhe = @max(mhe, he);
                     }
                 }

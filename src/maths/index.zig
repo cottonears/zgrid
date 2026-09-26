@@ -382,10 +382,10 @@ test "leaf index round trip" {
             const centre = cell.getCentre();
             const centre_index = indexer.getLeafIndexForPoint(centre);
             try testing.expect(volume.checkVolumesOverlap(region, cell));
-            try testing.expect(@reduce(.And, cell.min >= region.min));
-            try testing.expect(@reduce(.And, cell.max <= region.max));
-            try testing.expect(@reduce(.And, centre > region.min));
-            try testing.expect(@reduce(.And, centre < region.max));
+            try testing.expect(@reduce(.And, @as(Vec2f, cell.min) >= @as(Vec2f, region.min)));
+            try testing.expect(@reduce(.And, @as(Vec2f, cell.max) <= @as(Vec2f, region.max)));
+            try testing.expect(@reduce(.And, centre > @as(Vec2f, region.min)));
+            try testing.expect(@reduce(.And, centre < @as(Vec2f, region.max)));
             try testing.expectEqual(leaf, centre_index);
         }
     }

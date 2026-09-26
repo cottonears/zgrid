@@ -439,7 +439,7 @@ fn benchmarkTree(
     }
     try table.appendStatsRow(allocator, table_str, Indexer.type_label, percentile);
 
-    const times = try tree.time_stats.getStatsTable(allocator, "step", &stat_percentiles);
-    defer allocator.free(times);
-    std.debug.print("{s}:\n{s}\n", .{ Indexer.type_label, times });
+    // const times = try tree.time_stats.getStatsTable(allocator, "step", &stat_percentiles);
+    // defer allocator.free(times);
+    // std.debug.print("{s}:\n{s}\n", .{ Indexer.type_label, times });
 }

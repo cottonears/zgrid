@@ -65,7 +65,7 @@ pub fn writeTreeSvg(
         }
     }
     // find every client id that participates in an overlap
-    const volumes = tree.leaf_data[0..tree.num_volumes];
+    const volumes = tree.leaf_vols[0..tree.num_volumes];
     const ids = tree.leaf_ids[0..tree.num_volumes];
     const overlap_buf = try allocator.alloc([2]T.ClientId, 16 * volumes.len);
     defer allocator.free(overlap_buf);
