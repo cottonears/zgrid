@@ -193,10 +193,64 @@ pub fn SquareTree(
             self.bounds_valid = true;
         }
 
+        // /// Sorts staged volumes into their final positions, then updates all nodes' BVs.
+        // /// Does work in parallel if the io implementation supports it; not thread-safe.
+        // pub fn buildParallel(self: *Self, io: Io) !void {
+        //     const t_enter = timer.now(io);
+        //     var group: Io.Group = .init;
+        //     errdefer group.cancel(io);
+
+        //     // first index points and update max-half-extent (if compressed)
+        //     const index_workers = @min(max_idx_workers, self.max_async_workers);
+        //     var worker_mhes: [max_idx_workers]Vec2f = undefined;
+        //     var idx_iter = AtomicRangeIter.init(0, self.num_volumes, index_workers);
+        //     for (0..index_workers) |i| {
+        //         const args = .{ self, &idx_iter, &worker_mhes[i] };
+        //         group.async(io, indexStagedVolumes, args);
+        //     }
+        //     try group.await(io);
+        //     const t_index = timer.now(io);
+
+        //     // update max-half-extent
+        //     var mhe: Vec2f = @splat(0);
+        //     for (0..index_workers) |i| mhe = @max(mhe, worker_mhes[i]);
+        //     self.max_half_extent = mhe;
+        //     const t_mhe = timer.now(io);
+
+        //     // then count-sort
+        //     try self.countSortStagedVolumes();
+        //     const t_count = timer.now(io);
+
+        //     const bv_top_nodes = nodes_in_level[bv_top_lvl];
+        //     const target_parts = update_bv_parts_per_worker * @as(usize, self.max_async_workers);
+        //     const parts = @min(bv_top_nodes, math.ceilPowerOfTwoAssert(usize, target_parts));
+        //     const workers = @min(self.max_async_workers, parts);
+        //     var range_iter = AtomicRangeIter.init(0, bv_top_nodes, parts);
+        //     // build lower levels' bounding volumes updated in parallel
+        //     for (0..workers) |_| {
+        //         group.async(io, updateSubtreeBvsWorker, .{ self, bv_top_lvl, &range_iter });
+        //     }
+        //     try group.await(io);
+        //     const t_bv_low = timer.now(io);
+        //     // build upper levels' bounding volumes serially
+        //     var lvl = bv_top_lvl;
+        //     while (lvl > 0) {
+        //         lvl -= 1;
+        //         self.updateLevelBvs(lvl, 0, nodes_in_level[lvl]);
+        //     }
+        //     const t_bv_hi = timer.now(io);
+
+        //     self.t_build_index += stats.elapsedUs(t_enter, t_index);
+        //     self.t_build_mhe += stats.elapsedUs(t_index, t_mhe);
+        //     self.t_build_count += stats.elapsedUs(t_mhe, t_count);
+        //     self.t_build_bv_low += stats.elapsedUs(t_count, t_bv_low);
+        //     self.t_build_bv_hi += stats.elapsedUs(t_bv_low, t_bv_hi);
+        //     self.bounds_valid = true;
+        // }
+
         /// Sorts staged volumes into their final positions, then updates all nodes' BVs.
         /// Does work in parallel if the io implementation supports it; not thread-safe.
         pub fn buildParallel(self: *Self, io: Io) !void {
-            const t_enter = timer.now(io);
             var group: Io.Group = .init;
             errdefer group.cancel(io);
 
@@ -209,17 +263,14 @@ pub fn SquareTree(
                 group.async(io, indexStagedVolumes, args);
             }
             try group.await(io);
-            const t_index = timer.now(io);
 
             // update max-half-extent
             var mhe: Vec2f = @splat(0);
             for (0..index_workers) |i| mhe = @max(mhe, worker_mhes[i]);
             self.max_half_extent = mhe;
-            const t_mhe = timer.now(io);
 
             // then count-sort
             try self.countSortStagedVolumes();
-            const t_count = timer.now(io);
 
             const bv_top_nodes = nodes_in_level[bv_top_lvl];
             const target_parts = update_bv_parts_per_worker * @as(usize, self.max_async_workers);
@@ -231,20 +282,12 @@ pub fn SquareTree(
                 group.async(io, updateSubtreeBvsWorker, .{ self, bv_top_lvl, &range_iter });
             }
             try group.await(io);
-            const t_bv_low = timer.now(io);
             // build upper levels' bounding volumes serially
             var lvl = bv_top_lvl;
             while (lvl > 0) {
                 lvl -= 1;
                 self.updateLevelBvs(lvl, 0, nodes_in_level[lvl]);
             }
-            const t_bv_hi = timer.now(io);
-
-            self.t_build_index += stats.elapsedUs(t_enter, t_index);
-            self.t_build_mhe += stats.elapsedUs(t_index, t_mhe);
-            self.t_build_count += stats.elapsedUs(t_mhe, t_count);
-            self.t_build_bv_low += stats.elapsedUs(t_count, t_bv_low);
-            self.t_build_bv_hi += stats.elapsedUs(t_bv_low, t_bv_hi);
             self.bounds_valid = true;
         }
 
