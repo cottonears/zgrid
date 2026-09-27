@@ -39,3 +39,20 @@ pub const ProbDensityFunc = union(enum) {
         return fillFloat(pdf, random, @ptrCast(vec_slice));
     }
 };
+
+const testing = std.testing;
+
+test "test fill2Vec populates all elements" {
+    const pdf_min: f32 = 30;
+    const pdf_max: f32 = 50;
+    const vec_min: Vec2f = @splat(pdf_min);
+    const vec_max: Vec2f = @splat(pdf_max);
+    const pdf = ProbDensityFunc{ .uniform = .{ .min = pdf_min, .max = pdf_max } };
+    var prng = std.Random.DefaultPrng.init(0);
+    var vecs: [4096]Vec2f = undefined;
+    ProbDensityFunc.fillVec2f(pdf, prng.random(), &vecs);
+    for (vecs) |v| {
+        try testing.expect(@reduce(.And, vec_min <= v));
+        try testing.expect(@reduce(.And, vec_max >= v));
+    }
+}
