@@ -173,7 +173,7 @@ pub const TestVolumes = struct {
     balls: std.ArrayList(Ball2f),
     boxes: std.ArrayList(Box2f),
     lines: std.ArrayList(Line2f),
-    oriented_boxes: std.ArrayList(OrientedBox2f),
+    obbs: std.ArrayList(OrientedBox2f),
     const Self = @This();
 
     pub fn initRandom(
@@ -246,7 +246,7 @@ pub const TestVolumes = struct {
             .balls = balls,
             .boxes = boxes,
             .lines = lines,
-            .oriented_boxes = obbs,
+            .obbs = obbs,
         };
     }
 
@@ -321,7 +321,7 @@ pub const TestVolumes = struct {
             .balls = balls,
             .boxes = boxes,
             .lines = lines,
-            .oriented_boxes = obbs,
+            .obbs = obbs,
         };
     }
 
@@ -329,7 +329,7 @@ pub const TestVolumes = struct {
         self.balls.deinit(allocator);
         self.boxes.deinit(allocator);
         self.lines.deinit(allocator);
-        self.oriented_boxes.deinit(allocator);
+        self.obbs.deinit(allocator);
     }
 
     pub fn getVolumes(self: *Self, comptime T: type) []T {
@@ -337,7 +337,7 @@ pub const TestVolumes = struct {
             Ball2f => self.balls.items,
             Box2f => self.boxes.items,
             Line2f => self.lines.items,
-            OrientedBox2f => self.oriented_boxes.items,
+            OrientedBox2f => self.obbs.items,
             else => @compileError("Unsupported volume type: " ++ @typeName(T)),
         };
     }

@@ -24,7 +24,7 @@ const min_trials = 20;
 const min_num_vols = 100;
 const stat_header = "percentile";
 const stat_percentiles: [2]u8 = .{ 50, 95 };
-const untimed_trials = 5;
+const untimed_trials = 3;
 const usage_msg =
     \\Usage: zgrid-bench [options]
     \\  -i: Set an input file (csv or txt) to load test volumes from (see readme for correct format)
@@ -34,7 +34,7 @@ const usage_msg =
 var input_file: ?[]const u8 = null;
 var output_dir: ?[]const u8 = null;
 var random_vols: TestVolumes = undefined;
-var num_trials: u8 = 100;
+var num_trials: u8 = 60;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
@@ -105,74 +105,86 @@ fn processArgs(io: std.Io, args_iter: *ArgsIter) !void {
 }
 
 fn benchmarkOverlapChecks(allocator: Allocator, io: std.Io) !void {
-    const num_cols = 5;
-    const headers: [num_cols][]const u8 = .{
-        " ball-ball ", " box-box ", " ball-box ", " obb-box ", " line-box ",
+    const columns = [_][]const u8{
+        "   box x box ",
+        " ball x ball ",
+        "  ball x box ",
+        " line x line ",
+        "  line x box ",
+        "   obb x obb ",
+        "   obb x box ",
     };
-    const formats: [num_cols][]const u8 = .{
-        " {d:>9.3} ", " {d:>7.3} ", " {d:>8.3} ", " {d:>7.3} ", " {d:>8.3} ",
+    const formats: [columns.len][]const u8 = .{
+        " {d:>11.3} ", " {d:>11.3} ", " {d:>11.3} ", " {d:>11.3} ", " {d:>11.3} ", " {d:>11.3} ", " {d:>11.3} ",
     };
-    const OverlapTable = DataTable(f64, num_cols, "| {s:<10} |", headers, formats);
+    const OverlapTable = DataTable(f64, columns.len, "| {s:>11} |", columns, formats);
     var table = try OverlapTable.init(allocator, num_trials);
     defer table.deinit(allocator);
-    var first_ball = random_vols.balls.items[0];
-    first_ball.radius = first_ball.radius * 25;
-    const first_box = random_vols.boxes.items[0];
-    const query_box = first_box.getScaled(25);
-    const query_obb = random_vols.oriented_boxes.items[0].getScaled(25);
-    const query_line = Line2f{ .start = first_box.min, .end = first_box.max };
+    const query_box = random_vols.boxes.items[0].getScaled(20);
+    const query_ball = random_vols.balls.items[0].getScaled(20);
+    const query_line = random_vols.lines.items[0].getScaled(20);
+    const query_obb = random_vols.obbs.items[0].getScaled(20);
 
     // untimed warmup trials
     var n: usize = 0;
     for (0..untimed_trials) |_| {
-        for (random_vols.balls.items) |b| n += if (volume.checkVolumesOverlap(first_ball, b)) 1 else 0;
-        for (random_vols.boxes.items) |b| n += if (volume.checkVolumesOverlap(query_box, b)) 1 else 0;
+        for (random_vols.boxes.items) |b| {
+            n += if (volume.checkVolumesOverlap(query_box, b)) 1 else 0;
+            n += if (volume.checkVolumesOverlap(query_ball, b)) 1 else 0;
+            n += if (volume.checkVolumesOverlap(query_line, b)) 1 else 0;
+            n += if (volume.checkVolumesOverlap(query_obb, b)) 1 else 0;
+        }
         for (random_vols.balls.items) |b| n += if (volume.checkVolumesOverlap(query_box, b)) 1 else 0;
-        for (random_vols.boxes.items) |b| n += if (volume.checkVolumesOverlap(first_ball, b)) 1 else 0;
-        for (random_vols.boxes.items) |b| n += if (volume.checkVolumesOverlap(query_obb, b)) 1 else 0;
-        for (random_vols.boxes.items) |b| n += if (volume.checkVolumesOverlap(query_line, b)) 1 else 0;
+        for (random_vols.lines.items) |b| n += if (volume.checkVolumesOverlap(query_box, b)) 1 else 0;
+        for (random_vols.obbs.items) |b| n += if (volume.checkVolumesOverlap(query_box, b)) 1 else 0;
     }
 
     // timed trials
-    var overlap_count: u32 = 0;
-    const ball_checks: f64 = @floatFromInt(random_vols.balls.items.len);
-    const box_checks: f64 = @floatFromInt(random_vols.boxes.items.len);
-    const mixed_checks: f64 = @floatFromInt(random_vols.balls.items.len + random_vols.boxes.items.len);
+    var hit_count: usize = 0;
+    const num_checks: f64 = @floatFromInt(random_vols.boxes.items.len);
     for (0..num_trials) |_| {
         const t_0 = timer.now(io);
-        for (random_vols.balls.items) |b| {
-            overlap_count += if (volume.checkVolumesOverlap(first_ball, b)) 1 else 0;
+        for (random_vols.boxes.items) |b| {
+            hit_count += if (volume.checkVolumesOverlap(query_box, b)) 1 else 0;
         }
         const t_1 = timer.now(io);
-        for (random_vols.boxes.items) |b| {
-            overlap_count += if (volume.checkVolumesOverlap(query_box, b)) 1 else 0;
+        for (random_vols.balls.items) |b| {
+            hit_count += if (volume.checkVolumesOverlap(query_ball, b)) 1 else 0;
         }
         const t_2 = timer.now(io);
-        for (random_vols.balls.items) |b| {
-            overlap_count += if (volume.checkVolumesOverlap(query_box, b)) 1 else 0;
-        }
         for (random_vols.boxes.items) |b| {
-            overlap_count += if (volume.checkVolumesOverlap(first_ball, b)) 1 else 0;
+            hit_count += if (volume.checkVolumesOverlap(query_ball, b)) 1 else 0;
         }
         const t_3 = timer.now(io);
-        for (random_vols.boxes.items) |b| {
-            overlap_count += if (volume.checkVolumesOverlap(query_obb, b)) 1 else 0;
+        for (random_vols.lines.items) |l| {
+            hit_count += if (volume.checkVolumesOverlap(query_line, l)) 1 else 0;
         }
         const t_4 = timer.now(io);
         for (random_vols.boxes.items) |b| {
-            overlap_count += if (volume.checkVolumesOverlap(query_line, b)) 1 else 0;
+            hit_count += if (volume.checkVolumesOverlap(query_line, b)) 1 else 0;
         }
         const t_5 = timer.now(io);
+        for (random_vols.obbs.items) |o| {
+            hit_count += if (volume.checkVolumesOverlap(query_obb, o)) 1 else 0;
+        }
+        const t_6 = timer.now(io);
+        for (random_vols.boxes.items) |b| {
+            hit_count += if (volume.checkVolumesOverlap(query_obb, b)) 1 else 0;
+        }
+        const t_7 = timer.now(io);
+
         table.addRow(.{
-            test_utils.elapsedNs(t_0, t_1) / ball_checks,
-            test_utils.elapsedNs(t_1, t_2) / box_checks,
-            test_utils.elapsedNs(t_2, t_3) / mixed_checks,
-            test_utils.elapsedNs(t_3, t_4) / box_checks,
-            test_utils.elapsedNs(t_4, t_5) / box_checks,
+            test_utils.elapsedNs(t_0, t_1) / num_checks,
+            test_utils.elapsedNs(t_1, t_2) / num_checks,
+            test_utils.elapsedNs(t_2, t_3) / num_checks,
+            test_utils.elapsedNs(t_3, t_4) / num_checks,
+            test_utils.elapsedNs(t_4, t_5) / num_checks,
+            test_utils.elapsedNs(t_5, t_6) / num_checks,
+            test_utils.elapsedNs(t_6, t_7) / num_checks,
         });
     }
 
-    std.debug.print("Overlap checks: found {} overlaps:\n", .{overlap_count});
+    std.debug.print("Overlap checks: found {} overlaps:\n", .{hit_count});
     const left_header = "percentile";
     const stats_str = try table.getStatsTable(allocator, left_header[0..], &stat_percentiles);
     defer allocator.free(stats_str);
@@ -256,7 +268,7 @@ fn benchmarkSquareTrees(allocator: Allocator, io: std.Io) !void {
         "ext_overlap: amount = {d:.3}, scale = {d:.3}\nnear_search: k = {d}, amount = {d:.3}, scale = {d:.3}",
         .{ ext_overlap_amount, ext_overlap_scale, near_search_k, near_search_amount, near_search_scale },
     );
-    inline for (.{ Ball2f, Box2f }) |V| {
+    inline for (.{ Ball2f, Box2f, Line2f, OrientedBox2f }) |V| {
         std.debug.print("\nUncompressed tree benchmarks for {any}...\n{s}\n", .{ V, params_str });
         var reg_table_str = try std.ArrayList(u8).initCapacity(allocator, 4096);
         defer reg_table_str.deinit(allocator);

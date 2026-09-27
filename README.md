@@ -120,14 +120,13 @@ Zgrid provides several 2D primitives for spatial queries; all fields are typed a
 By definition, all volumes include points that lie on their boundaries.
 E.g., points that are exactly `radius` distance away from a ball's centre are considered inside it.
 
-TODO: update the speed times after doing more extensive benchmarks.
 
 | Name            | Size  | Query speed | 
 | --------------- | ----- | ----------- | 
 | `Ball2f`        | 12 B  |    Fast     | 
 | `Box2f`         | 16 B  |    Fast     | 
 | `Line2f`        | 16 B  |   Average   |
-| `OrientedBox2f` | 24 B  |   Average   |
+| `OrientedBox2f` | 24 B  |   Slower    |
 
 A `SquareTree` stores a single volume type, chosen at compile time.
 Lines cannot be stored at present, though support for this may be added in future.
@@ -245,21 +244,6 @@ Concurrent calls on the same tree from different client threads is strongly disc
 Overlap queries use an internal scratch buffer and are not thread safe.
 This includes the overlap queries, which modify internal scratch buffers while searching the tree.
 
-
-## 0.1 TODO
-- [X] Improve benchmarking reports + tooling (better stats + warmup queries).
-- [X] Finish `findNearestNeighbours` (expanding-ring search).
-- [X] Add `getLeafOccupancyUnderNode` + an indexer helper (e.g. `getLeafSuccessorRange`) to help with workload partitioning.
-- [X] Implement helper for determining suitable number of workers + parts for parallel methods.
-- [X] Add findExtOverlapsSingle.
-- [X] Improve indexing performance.
-- [X] Parallelise build (with a radix sort?).
-- [X] Move benchmark to a separate repo to reduce compile times.
-- [X] Bring the benchmark back in a way that won't affect importers' compile times.
-- [X] Look into what is going on with the volume alignment + sizes, may need to go to scalar floats or simple arrays.
-- [X] Implement `vol.getExpanded(translation)` (makes conservative BVs for moving bodies); helper to avoid tunnelling.
-- [x] Revamp this readme.
-- [ ] Set up CI (`zig build test` on push).
 
 ## Roadmap
 In no particular order:
