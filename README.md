@@ -55,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const min = Vec2f{ 0, 0 };
     const max = Vec2f{ 16, 12 };
-    const tree_capacity = 64_000; // whole-tree capacity
+    const tree_capacity = 50_000; // whole-tree capacity
     const max_workers = 0; // will default to number of CPUs - 1
     
     var tree = try SquareTree.init(arena, min, max, tree_capacity, max_workers);
@@ -99,8 +99,6 @@ pub fn main(init: std.process.Init) !void {
     for (nearby) |n| {
         std.debug.print("Neighbour found: id = {d}, dist = {d:.3}.\n", .{ n.id, n.dist });
     }
-
-    tree.clear(); // empties the tree
 }
 ```
 A `SquareTree` is designed to be rebuilt frequently rather than maintained incrementally.
@@ -109,29 +107,29 @@ A typical update cycle is:
 tree.clear(); // removes previous contents without releasing backing memory
 try tree.add(volumes, ids); // stages new volumes (+ their ids)
 try tree.build(); // indexes the volumes and builds the BVH structure
+// perform queries as needed
 ```
-After clearing the tree, you can also `relocate` it to a new position at very low cost.
+An empty tree can be moved to a new position with `relocate` at very low cost.
 
 There is a companion project that demonstrates how zgrid can be used for a simple particle simulation: see [`zgrid-demo`](https://github.com/cottonears/zgrid-demo).
 
 
 ## Volumes
 
-Zgrid provides several 2D primitives for spatial queries.
-Their fields are all typed as `f32` or `Vec2f` (an alias for `@Vector(2, f32)`). 
+Zgrid provides several 2D primitives for spatial queries; all fields are typed as `f32` or `[2]f32`.
 
-| Name            | Size  | Query speed  |               
-| --------------- | ----- | ------------ |
-| `Ball2f`        | 12 B  | Fast         |
-| `Box2f`         | 16 B  | Fast         |
-| `Line2f`        | 16 B  | Average      |
-| `OrientedBox2f` | 24 B  | Average      |
+| Name            | Size  | Storable | Query speed |               
+| --------------- | ----- | -------- | ----------- |
+| `Ball2f`        | 12 B  |    Yes   |    Fast     |
+| `Box2f`         | 16 B  |    Yes   |    Fast     |
+| `Line2f`        | 16 B  |    No    |   Average   |
+| `OrientedBox2f` | 24 B  |    Yes   |   Average   |
 
 A `SquareTree` stores a single volume type, chosen at compile time.
 Lines cannot be stored at present, though support for this may be added in future.
 All implemented volumes can be used for external tree queries: regardless of the stored type.
 For example, a tree containing `Box2f` volumes can be queried using balls or lines.
-This approach allows the tree to remain specialised for its stored data, while still supporting mixed-type spatial queries.
+This allows the tree to remain specialised for its stored data, while still supporting mixed-type spatial queries.
 
 
 ## SquareTree
@@ -195,6 +193,7 @@ The second parameter controls *compression*: how many levels of the hierarchy ar
 Using a compression of 1 will result in an uncompressed tree, so in the above example level 0 is a 2 x 2 grid.
 If the compression is set to a higher number, the top-level grid becomes finer and only the hierarchy in lower levels is retained.
 If compression is set equal to the tree's effective depth (6 in the above example), then the entire hierarchy will be collapsed into level 0 - the tree becomes a uniform grid.
+Compression is clamped to the range (1, effective_depth) to prevent compile errors.
 
 Aside from the grid-size and tree depth ramifications, the choice of curve makes little practical difference (at present).
 All curves have possess same key recursive property, although there are marginal differences in how well they preserve locality.

@@ -14,10 +14,9 @@ const GridIndex = curve.GridIndex;
 const GridCoords = struct { row: GridIndex, col: GridIndex };
 
 /// Recursively indexes a region on the 2D plane.
-/// Level 0 'compresses' several layers' worth of children to limit traversal depth.
 pub fn Indexer2f(
     comptime curve_type: Curve, // type of space-filling curve used
-    comptime top_lvl_compression: u4, // levels folded into level 0; 1 = uncompressed
+    comptime compression: u4, // number of levels folded into level 0; 1 = uncompressed
 ) type {
     return struct {
         cell_size: f32,
@@ -25,19 +24,13 @@ pub fn Indexer2f(
         min_pt: Vec2f,
         max_pt: Vec2f,
 
-        comptime {
-            if (top_lvl_compression == 0)
-                @compileError("top-level compression must be > 0");
-            if (top_lvl_compression > Curve.degree(curve_type))
-                @compileError("top-level compression exceeds curve degree");
-        }
         pub const CurveIndex = Curve.index(curve_type);
         pub const LevelIndex = math.IntFittingRange(0, depth - 1); // 0 = top level
-        pub const top_levels = top_lvl_compression;
         pub const base = Curve.base(curve_type);
-        pub const regular_levels = Curve.degree(curve_type) - top_levels;
-        pub const depth = 1 + regular_levels;
         pub const effective_depth = Curve.degree(curve_type);
+        pub const top_levels = math.clamp(compression, 1, effective_depth);
+        pub const regular_levels = effective_depth - top_levels;
+        pub const depth = 1 + regular_levels;
         pub const nodes_in_level = calc.getPow2nSequence(base, top_levels, effective_depth);
         pub const num_children = base * base;
         pub const num_leaves = nodes_in_level[depth - 1];
