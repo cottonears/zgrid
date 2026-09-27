@@ -32,7 +32,7 @@ pub fn writeTreeSvg(
 ) !void {
     const bg: svg.Style = .{
         .fill_active = true,
-        .fill_hsl = .{ 0, 0, 95 },
+        .fill_hsl = .{ 20, 20, 96 },
         .stroke_active = false,
     };
     var canvas = try svg.Canvas.init(allocator, tree.indexer.min_pt, tree.indexer.max_pt, bg);
@@ -41,19 +41,19 @@ pub fn writeTreeSvg(
     const scale = @reduce(.Max, extent) / 800.0;
     // draw grid subdivisions + cell labels, finest level first
     const palette = [_][3]u16{
-        .{ 10, 60, 60 },
-        .{ 80, 60, 60 },
-        .{ 150, 60, 50 },
-        .{ 200, 60, 60 },
-        .{ 270, 60, 60 },
-        .{ 335, 60, 60 },
+        .{ 220, 60, 45 },
+        .{ 160, 60, 45 },
+        .{ 100, 60, 45 },
+        .{ 40, 60, 45 },
+        .{ 340, 60, 45 },
+        .{ 280, 60, 45 },
     };
     var label_buf: [16]u8 = undefined;
     for (0..T.depth) |lvl_offset| {
         const lvl = T.depth - lvl_offset - 1;
         const style: svg.Style = .{
             .stroke_hsl = palette[lvl % palette.len],
-            .stroke_width = scale * calc.asf32(lvl_offset),
+            .stroke_width = scale * calc.asf32(lvl_offset + 1),
         };
         const font_size: f32 = scale * (4.0 + 8.0 * calc.asf32(lvl_offset + 1));
         for (0..T.nodes_in_level[lvl]) |i| {
@@ -79,7 +79,7 @@ pub fn writeTreeSvg(
     }
     //draw the stored volumes, colouring overlapping ones differently
     const default_style: svg.Style = .{ .stroke_hsl = .{ 0, 0, 30 }, .stroke_width = 1.5 * scale };
-    const overlap_style: svg.Style = .{ .stroke_hsl = .{ 0, 50, 50 }, .stroke_width = 2.0 * scale };
+    const overlap_style: svg.Style = .{ .stroke_hsl = .{ 0, 50, 50 }, .stroke_width = 1.5 * scale };
     const id_label_hsl: [3]u16 = .{ 0, 0, 0 };
     const id_label_font_size: f32 = scale * 10.0;
     var id_label_buf: [20]u8 = undefined;
