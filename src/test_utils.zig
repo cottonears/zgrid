@@ -7,6 +7,7 @@ const math = std.math;
 const Allocator = std.mem.Allocator;
 const Box2f = volume.Box2f;
 const Ball2f = volume.Ball2f;
+const Line2f = volume.Line2f;
 const OrientedBox2f = volume.OrientedBox2f;
 const ProbDensityFunc = prob.ProbDensityFunc;
 const Vec2f = calc.Vec2f;
@@ -43,6 +44,7 @@ pub fn DataTable(
     comptime formats: [num_cols][]const u8,
 ) type {
     const max_col_width = 32;
+    if (num_cols == 0) @compileError("DataTable requires at least one column");
 
     return struct {
         column_data: [num_cols]std.ArrayList(T) = undefined,
@@ -171,6 +173,7 @@ pub fn DataTable(
 pub const TestVolumes = struct {
     balls: std.ArrayList(Ball2f),
     boxes: std.ArrayList(Box2f),
+    lines: std.ArrayList(Line2f),
     oriented_boxes: std.ArrayList(OrientedBox2f),
     const Self = @This();
 
@@ -181,83 +184,119 @@ pub const TestVolumes = struct {
         size_dist: ProbDensityFunc,
         position_dist: ProbDensityFunc,
     ) !Self {
-        var random_floats = try allocator.alloc(f32, capacity);
-        defer allocator.free(random_floats);
-        var random_vecs = try allocator.alloc(Vec2f, capacity);
-        defer allocator.free(random_vecs);
+        var r_floats = try allocator.alloc(f32, capacity);
+        defer allocator.free(r_floats);
+        var r_vecs = try allocator.alloc(Vec2f, capacity);
+        defer allocator.free(r_vecs);
         // generate random balls
-        ProbDensityFunc.fillFloat(size_dist, random, random_floats[0..]);
-        ProbDensityFunc.fillVec2f(position_dist, random, random_vecs[0..]);
-        var rand_balls = try std.ArrayList(Ball2f).initCapacity(allocator, capacity);
+        ProbDensityFunc.fillFloat(size_dist, random, r_floats[0..]);
+        ProbDensityFunc.fillVec2f(position_dist, random, r_vecs[0..]);
+        var balls = try std.ArrayList(Ball2f).initCapacity(allocator, capacity);
+        errdefer balls.deinit(allocator);
         for (0..capacity) |i| {
-            rand_balls.appendAssumeCapacity(.{
-                .centre = random_vecs[i],
-                .radius = random_floats[i],
-            });
+            const ball = Ball2f{ .centre = r_vecs[i], .radius = r_floats[i] };
+            balls.appendAssumeCapacity(ball);
         }
         // generate random boxes
-        ProbDensityFunc.fillFloat(size_dist, random, random_floats[0..]);
-        ProbDensityFunc.fillVec2f(position_dist, random, random_vecs[0..]);
-        var rand_boxes = try std.ArrayList(Box2f).initCapacity(allocator, capacity);
+        ProbDensityFunc.fillFloat(size_dist, random, r_floats[0..]);
+        ProbDensityFunc.fillVec2f(position_dist, random, r_vecs[0..]);
+        var boxes = try std.ArrayList(Box2f).initCapacity(allocator, capacity);
+        errdefer boxes.deinit(allocator);
         for (0..capacity) |i| {
             const j = (i + capacity / 2) % capacity;
-            const dim = Vec2f{ 2 * random_floats[i], 2 * random_floats[j] };
-            const box = Box2f{ .min = random_vecs[i], .max = random_vecs[i] + dim };
-            rand_boxes.appendAssumeCapacity(box);
+            const dim = Vec2f{ 2 * r_floats[i], 2 * r_floats[j] };
+            const box = Box2f{ .min = r_vecs[i], .max = r_vecs[i] + dim };
+            boxes.appendAssumeCapacity(box);
+        }
+        // generate random lines
+        ProbDensityFunc.fillFloat(size_dist, random, r_floats[0..]);
+        ProbDensityFunc.fillVec2f(position_dist, random, r_vecs[0..]);
+        var lines = try std.ArrayList(Line2f).initCapacity(allocator, capacity);
+        errdefer lines.deinit(allocator);
+        for (0..capacity) |i| {
+            const length = r_floats[i];
+            const start = r_vecs[i];
+            const j = (i + capacity / 2) % capacity;
+            const d = r_vecs[j] - start;
+            const d_norm = calc.norm(d);
+            const end = if (d_norm > 0.0)
+                start + calc.scaledVec(length / d_norm, d)
+            else
+                start + calc.scaledVec(length, .{ 1, 0 });
+
+            const line = Line2f{ .start = start, .end = end };
+            lines.appendAssumeCapacity(line);
         }
         // generate random oriented boxes
-        ProbDensityFunc.fillFloat(size_dist, random, random_floats[0..]);
-        ProbDensityFunc.fillVec2f(position_dist, random, random_vecs[0..]);
+        ProbDensityFunc.fillFloat(size_dist, random, r_floats[0..]);
+        ProbDensityFunc.fillVec2f(position_dist, random, r_vecs[0..]);
         const tau_dist = ProbDensityFunc{ .uniform = .{ .min = 0, .max = math.tau } };
-        var rand_obbs = try std.ArrayList(OrientedBox2f).initCapacity(allocator, capacity);
+        var obbs = try std.ArrayList(OrientedBox2f).initCapacity(allocator, capacity);
+        errdefer obbs.deinit(allocator);
         for (0..capacity) |i| {
             const j = (i + capacity / 2) % capacity;
             const angle = ProbDensityFunc.getFloat(tau_dist, random);
-            rand_obbs.appendAssumeCapacity(.{
-                .centre = random_vecs[i],
-                .half_extents = .{ random_floats[i], random_floats[j] },
+            const obb = OrientedBox2f{
+                .centre = r_vecs[i],
+                .half_extents = .{ r_floats[i], r_floats[j] },
                 .axis = .{ @cos(angle), @sin(angle) },
-            });
+            };
+            obbs.appendAssumeCapacity(obb);
         }
         return .{
-            .balls = rand_balls,
-            .boxes = rand_boxes,
-            .oriented_boxes = rand_obbs,
+            .balls = balls,
+            .boxes = boxes,
+            .lines = lines,
+            .oriented_boxes = obbs,
         };
     }
 
     /// Loads test volumes from a csv file; rows must match below format:
     ///  - ball, centre_x, centre_y, radius
     ///  - box, min_x, min_y, max_x, max_y
+    ///  - line, start_x, start_y, end_x, end_y
     ///  - obb, centre_x, centre_y, half_extent_x, half_extent_y, axis_x, axis_y
     pub fn initCsv(allocator: Allocator, io: std.Io, filepath: []const u8) !Self {
-        const contents = try std.Io.Dir.cwd().readFileAlloc(io, filepath, allocator, .unlimited);
+        const cwd = std.Io.Dir.cwd();
+        const contents = try cwd.readFileAlloc(io, filepath, allocator, .unlimited);
         defer allocator.free(contents);
 
-        var ball_list: std.ArrayList(Ball2f) = .empty;
-        errdefer ball_list.deinit(allocator);
-        var box_list: std.ArrayList(Box2f) = .empty;
-        errdefer box_list.deinit(allocator);
-        var obb_list: std.ArrayList(OrientedBox2f) = .empty;
-        errdefer obb_list.deinit(allocator);
+        var balls: std.ArrayList(Ball2f) = .empty;
+        errdefer balls.deinit(allocator);
+        var boxes: std.ArrayList(Box2f) = .empty;
+        errdefer boxes.deinit(allocator);
+        var lines: std.ArrayList(Line2f) = .empty;
+        errdefer lines.deinit(allocator);
+        var obbs: std.ArrayList(OrientedBox2f) = .empty;
+        errdefer obbs.deinit(allocator);
 
-        var lines = std.mem.tokenizeAny(u8, contents, "\r\n");
-        while (lines.next()) |line| {
-            const trimmed = std.mem.trim(u8, line, " \t");
+        var text_lines = std.mem.tokenizeAny(u8, contents, "\r\n");
+        while (text_lines.next()) |txt| {
+            const trimmed = std.mem.trim(u8, txt, " \t");
             if (trimmed.len == 0) continue;
             var fields = std.mem.splitScalar(u8, trimmed, ',');
-            const kind = fields.next() orelse return error.InvalidCsvRow;
+            const col_0 = fields.next() orelse return error.InvalidCsvRow;
+            const kind = std.mem.trim(u8, col_0, " \t");
             if (std.ascii.eqlIgnoreCase(kind, "ball")) {
                 const cx = try parseCsvFloat(&fields);
                 const cy = try parseCsvFloat(&fields);
                 const r = try parseCsvFloat(&fields);
-                try ball_list.append(allocator, .{ .centre = .{ cx, cy }, .radius = r });
+                const b = Ball2f{ .centre = .{ cx, cy }, .radius = r };
+                try balls.append(allocator, b);
             } else if (std.ascii.eqlIgnoreCase(kind, "box")) {
-                const min_x = try parseCsvFloat(&fields);
-                const min_y = try parseCsvFloat(&fields);
-                const max_x = try parseCsvFloat(&fields);
-                const max_y = try parseCsvFloat(&fields);
-                try box_list.append(allocator, .{ .min = .{ min_x, min_y }, .max = .{ max_x, max_y } });
+                const lx = try parseCsvFloat(&fields);
+                const ly = try parseCsvFloat(&fields);
+                const hx = try parseCsvFloat(&fields);
+                const hy = try parseCsvFloat(&fields);
+                const b = Box2f{ .min = .{ lx, ly }, .max = .{ hx, hy } };
+                try boxes.append(allocator, b);
+            } else if (std.ascii.eqlIgnoreCase(kind, "line")) {
+                const sx = try parseCsvFloat(&fields);
+                const sy = try parseCsvFloat(&fields);
+                const ex = try parseCsvFloat(&fields);
+                const ey = try parseCsvFloat(&fields);
+                const l = Line2f{ .start = .{ sx, sy }, .end = .{ ex, ey } };
+                try lines.append(allocator, l);
             } else if (std.ascii.eqlIgnoreCase(kind, "obb")) {
                 const cx = try parseCsvFloat(&fields);
                 const cy = try parseCsvFloat(&fields);
@@ -265,29 +304,32 @@ pub const TestVolumes = struct {
                 const hy = try parseCsvFloat(&fields);
                 const ax = try parseCsvFloat(&fields);
                 const ay = try parseCsvFloat(&fields);
-                try obb_list.append(allocator, .{
+                const ob = OrientedBox2f{
                     .centre = .{ cx, cy },
                     .half_extents = .{ hx, hy },
                     .axis = .{ ax, ay },
-                });
+                };
+                try obbs.append(allocator, ob);
             } else {
                 return error.UnknownVolumeType;
             }
         }
-        ball_list.shrinkAndFree(allocator, ball_list.items.len);
-        box_list.shrinkAndFree(allocator, box_list.items.len);
-        obb_list.shrinkAndFree(allocator, obb_list.items.len);
-
+        balls.shrinkAndFree(allocator, balls.items.len);
+        boxes.shrinkAndFree(allocator, boxes.items.len);
+        lines.shrinkAndFree(allocator, lines.items.len);
+        obbs.shrinkAndFree(allocator, obbs.items.len);
         return .{
-            .balls = ball_list,
-            .boxes = box_list,
-            .oriented_boxes = obb_list,
+            .balls = balls,
+            .boxes = boxes,
+            .lines = lines,
+            .oriented_boxes = obbs,
         };
     }
 
     pub fn deinit(self: *Self, allocator: Allocator) void {
         self.balls.deinit(allocator);
         self.boxes.deinit(allocator);
+        self.lines.deinit(allocator);
         self.oriented_boxes.deinit(allocator);
     }
 
@@ -295,13 +337,15 @@ pub const TestVolumes = struct {
         return switch (T) {
             Ball2f => self.balls.items,
             Box2f => self.boxes.items,
+            Line2f => self.lines.items,
             OrientedBox2f => self.oriented_boxes.items,
-            else => unreachable,
+            else => @compileError("Unsupported volume type: " ++ @typeName(T)),
         };
     }
 
     fn parseCsvFloat(fields: *std.mem.SplitIterator(u8, .scalar)) !f32 {
         const field = fields.next() orelse return error.InvalidCsvRow;
-        return std.fmt.parseFloat(f32, field);
+        const trimmed = std.mem.trim(u8, field, " \t");
+        return std.fmt.parseFloat(f32, trimmed);
     }
 };
