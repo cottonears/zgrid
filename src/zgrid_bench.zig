@@ -19,7 +19,7 @@ const TestVolumes = zgrid.test_utils.TestVolumes;
 const Indexer2f = zgrid.Indexer2f;
 const SquareTree = zgrid.SquareTree;
 
-const max_capacity = 400_000;
+const max_capacity = 200_000;
 const min_trials = 20;
 const min_num_vols = 100;
 const stat_header = "percentile";

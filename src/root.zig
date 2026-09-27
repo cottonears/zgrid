@@ -106,7 +106,7 @@ pub fn writeTreeSvg(
     if (std.fs.path.dirname(filename)) |dir| {
         try std.Io.Dir.cwd().createDirPath(io, dir);
     }
-    try canvas.writeToFile(io, test_alloc, filename, wrap_html);
+    try canvas.writeToFile(io, allocator, filename, wrap_html);
 }
 
 // ----------------------------------------------------------------------------

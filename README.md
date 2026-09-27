@@ -128,11 +128,9 @@ E.g., points that are exactly `radius` distance away from a ball's centre are co
 | `Line2f`        | 16 B  |   Average   |
 | `OrientedBox2f` | 24 B  |   Slower    |
 
-A `SquareTree` stores a single volume type, chosen at compile time.
-Lines cannot be stored at present, though support for this may be added in future.
-All implemented volumes can be used for external tree queries: regardless of the stored type.
-For example, a tree containing `Box2f` volumes can be queried using balls or lines.
-This allows the tree to remain specialised for its stored data, while still supporting mixed-type spatial queries.
+A `SquareTree` **stores just one volume type**, chosen at compile time.
+However, any type of volume can be used for _external_ tree queries.
+For example, a tree containing `Box2f` volumes can only store boxes, but can queried with balls or lines using `findExtOverlaps`.
 
 
 ## SquareTree
