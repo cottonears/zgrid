@@ -6,7 +6,7 @@
 >
     <style>
         .s0 {
-            fill: hsl(20, 20%, 96%);
+            fill: hsl(25,20%,97%);
         }
         .s1 {
             fill: none;

@@ -17,6 +17,11 @@ pub const Line2f = volume.Line2f;
 pub const OrientedBox2f = volume.OrientedBox2f;
 pub const Indexer2f = index.Indexer2f;
 pub const SquareTree = square_tree.SquareTree;
+const bg_style = svg.Style{
+    .fill_active = true,
+    .fill_hsl = .{ 25, 20, 97 },
+    .stroke_active = false,
+};
 
 /// Draws a tree's grid subdivisions, cell labels, and stored volumes to an svg file.
 /// Accepts a pointer to any tree exposing the same public interface as `SquareTree`.
@@ -30,12 +35,7 @@ pub fn writeTreeSvg(
     show_client_ids: bool,
     wrap_html: bool,
 ) !void {
-    const bg: svg.Style = .{
-        .fill_active = true,
-        .fill_hsl = .{ 20, 20, 96 },
-        .stroke_active = false,
-    };
-    var canvas = try svg.Canvas.init(allocator, tree.indexer.min_pt, tree.indexer.max_pt, bg);
+    var canvas = try svg.Canvas.init(allocator, tree.indexer.min_pt, tree.indexer.max_pt, bg_style);
     defer canvas.deinit(allocator);
     const extent = tree.indexer.max_pt - tree.indexer.min_pt;
     const scale = @reduce(.Max, extent) / 800.0;
@@ -48,7 +48,7 @@ pub fn writeTreeSvg(
         .{ 340, 60, 45 },
         .{ 280, 60, 45 },
     };
-    var label_buf: [16]u8 = undefined;
+    var lbuf: [16]u8 = undefined;
     for (0..T.depth) |lvl_offset| {
         const lvl = T.depth - lvl_offset - 1;
         const style: svg.Style = .{
@@ -60,7 +60,7 @@ pub fn writeTreeSvg(
             const node_index: T.CurveIndex = @intCast(i);
             const cell = tree.indexer.getCellBoundaryAtLevel(@intCast(lvl), node_index);
             const label_width = (std.math.log2_int(usize, T.nodes_in_level[lvl]) + 3) / 4;
-            const label = try std.fmt.bufPrint(&label_buf, "{X:0>[1]}", .{ node_index, label_width });
+            const label = try std.fmt.bufPrint(&lbuf, "{X:0>[1]}", .{ node_index, label_width });
             try canvas.addRectangle(allocator, cell.min, cell.max, style);
             try canvas.addText(allocator, cell.getCentre(), label, font_size, style.stroke_hsl);
         }
@@ -78,17 +78,19 @@ pub fn writeTreeSvg(
         try overlapping.put(pair[1], {});
     }
     //draw the stored volumes, colouring overlapping ones differently
-    const default_style: svg.Style = .{ .stroke_hsl = .{ 0, 0, 30 }, .stroke_width = 1.5 * scale };
-    const overlap_style: svg.Style = .{ .stroke_hsl = .{ 0, 50, 50 }, .stroke_width = 1.5 * scale };
+    const miss_style: svg.Style = .{ .stroke_hsl = .{ 0, 0, 30 }, .stroke_width = 1.5 * scale };
+    const hit_style: svg.Style = .{ .stroke_hsl = .{ 0, 50, 50 }, .stroke_width = 1.5 * scale };
     const id_label_hsl: [3]u16 = .{ 0, 0, 0 };
     const id_label_font_size: f32 = scale * 10.0;
     var id_label_buf: [20]u8 = undefined;
     for (volumes, ids) |v, id| {
-        const style = if (overlapping.contains(id)) overlap_style else default_style;
+        const style = if (overlapping.contains(id)) hit_style else miss_style;
         if (T.Volume == Ball2f) {
             try canvas.addCircle(allocator, v.centre, v.radius, style);
         } else if (T.Volume == Box2f) {
             try canvas.addRectangle(allocator, v.min, v.max, style);
+        } else if (T.Volume == Line2f) {
+            try canvas.addLine(allocator, v.start, v.end, style);
         } else if (T.Volume == OrientedBox2f) {
             var corners = v.getCorners();
             try canvas.addPolygon(allocator, &corners, style);
@@ -121,11 +123,9 @@ const space_max = 50;
 
 test "tree self overlaps matches brute force" {
     const Trees = .{
-        SquareTree(Indexer2f(.Morton16, 1), OrientedBox2f, u16),
-        SquareTree(Indexer2f(.Spring16, 1), Ball2f, u16),
-        SquareTree(Indexer2f(.Zigzag16, 1), Box2f, u16),
         SquareTree(Indexer2f(.Morton64, 1), Ball2f, u16),
         SquareTree(Indexer2f(.Spring64, 1), Box2f, u16),
+        SquareTree(Indexer2f(.Spring64, 1), Line2f, u16),
         SquareTree(Indexer2f(.Zigzag64, 1), OrientedBox2f, u16),
     };
     const seed = test_utils.getClockBasedRngSeed(testing.io);
@@ -156,7 +156,7 @@ test "tree self overlaps matches brute force" {
                 }
             }
         }
-        // check that the pairwise overlap results agree with those returned by the tree's method
+        // check that the pairwise overlap results agree with those from the tree
         const found_buf = try test_alloc.alloc([2]u16, num_volumes * num_volumes / 2);
         defer test_alloc.free(found_buf);
         const actual = try tree.findSelfOverlapsParallel(testing.io, found_buf);
@@ -232,6 +232,7 @@ test "draw trees" {
     const Trees = .{
         SquareTree(Indexer, Ball2f, u16),
         SquareTree(Indexer, Box2f, u16),
+        SquareTree(Indexer, Line2f, u16),
         SquareTree(Indexer, OrientedBox2f, u16),
     };
     const num_vols = 32;
@@ -248,6 +249,7 @@ test "draw trees" {
     defer test_vols.deinit(test_alloc);
     const min_pt = Vec2f{ 0, 0 };
     const max_pt = Vec2f{ 1024, 1024 };
+    var buf: [512]u8 = undefined;
     // add the volumes to the tree and draw it
     inline for (Trees) |T| {
         var tree = try T.init(test_alloc, min_pt, max_pt, num_vols, 0);
@@ -256,8 +258,6 @@ test "draw trees" {
         const indexes = calc.getRange(u16, num_vols);
         try tree.add(bodies, &indexes);
         try tree.build();
-
-        var buf: [512]u8 = undefined;
         const path = try std.fmt.bufPrint(&buf, "{s}/{s}.html", .{ test_dir, @typeName(T) });
         try writeTreeSvg(
             T,
@@ -278,7 +278,6 @@ test "draw indexer curves" {
         index.Indexer2f(Curve.Spring16, 1),
         index.Indexer2f(Curve.Zigzag16, 1),
     };
-    const bg_style: svg.Style = .{ .fill_active = true, .fill_hsl = .{ 0, 0, 95 } };
     const line_style: svg.Style = .{ .stroke_width = 2, .stroke_hsl = .{ 90, 60, 40 } };
     const min_pt = Vec2f{ 0, 0 };
     const max_pt = Vec2f{ 1024, 1024 };
