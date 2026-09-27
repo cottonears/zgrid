@@ -117,13 +117,17 @@ There is a companion project that demonstrates how zgrid can be used for a simpl
 ## Volumes
 
 Zgrid provides several 2D primitives for spatial queries; all fields are typed as `f32` or `[2]f32`.
+By definition, all volumes include points that lie on their boundaries.
+E.g., points that are exactly `radius` distance away from a ball's centre are considered inside it.
 
-| Name            | Size  | Storable | Query speed |               
-| --------------- | ----- | -------- | ----------- |
-| `Ball2f`        | 12 B  |    Yes   |    Fast     |
-| `Box2f`         | 16 B  |    Yes   |    Fast     |
-| `Line2f`        | 16 B  |    No    |   Average   |
-| `OrientedBox2f` | 24 B  |    Yes   |   Average   |
+TODO: update the speed times after doing more extensive benchmarks.
+
+| Name            | Size  | Query speed | 
+| --------------- | ----- | ----------- | 
+| `Ball2f`        | 12 B  |    Fast     | 
+| `Box2f`         | 16 B  |    Fast     | 
+| `Line2f`        | 16 B  |   Average   |
+| `OrientedBox2f` | 24 B  |   Average   |
 
 A `SquareTree` stores a single volume type, chosen at compile time.
 Lines cannot be stored at present, though support for this may be added in future.
@@ -259,7 +263,6 @@ This includes the overlap queries, which modify internal scratch buffers while s
 
 ## Roadmap
 In no particular order:
-- Allow lines to be stored? Could be useful and should be easy.
 - Add support for convex hulls (definitely useful, not as easy).
 - Try out dual-tree traversal (again) for self-overlap queries.
 - Research BIGMIN/LITMAX as potential performance improvements for neighbours search.

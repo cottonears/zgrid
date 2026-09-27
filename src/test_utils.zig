@@ -169,7 +169,6 @@ pub fn DataTable(
 }
 
 /// Container for test volumes (randomly-generated or loaded from a file).
-/// TODO: add test lines!
 pub const TestVolumes = struct {
     balls: std.ArrayList(Ball2f),
     boxes: std.ArrayList(Box2f),

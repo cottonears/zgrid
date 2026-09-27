@@ -883,8 +883,6 @@ test "hex tree overlap box" {
     try testing.expectEqualSlices([2]u16, &expected_self, self_overlaps);
 }
 
-// TODO: add simple test for external line vs tree volumes
-
 test "tree occupancy counts are accurate" {
     const seed = test_utils.getClockBasedRngSeed(testing.io);
     var prng = std.Random.DefaultPrng.init(seed);

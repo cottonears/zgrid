@@ -43,7 +43,11 @@ pub const Ball2f = struct {
     }
 
     pub fn isEmpty(self: Self) bool {
-        return self.radius <= 0;
+        return self.radius < 0;
+    }
+
+    pub fn translate(self: *Self, translation: Vec2f) void {
+        self.centre = @as(Vec2f, self.centre) + translation;
     }
 };
 
@@ -80,7 +84,12 @@ pub const Box2f = struct {
     }
 
     pub fn isEmpty(self: Self) bool {
-        return self.max[0] < self.min[0];
+        return self.max[0] < self.min[0] or self.max[1] < self.min[1];
+    }
+
+    pub fn translate(self: *Self, translation: Vec2f) void {
+        self.min = @as(Vec2f, self.min) + translation;
+        self.max = @as(Vec2f, self.max) + translation;
     }
 };
 
@@ -140,18 +149,48 @@ pub const OrientedBox2f = struct {
     }
 
     pub fn isEmpty(self: Self) bool {
-        return self.half_extents[0] <= 0 or self.half_extents[1] <= 0;
+        return self.half_extents[0] < 0 or self.half_extents[1] < 0;
+    }
+
+    pub fn translate(self: *Self, translation: Vec2f) void {
+        self.centre = @as(Vec2f, self.centre) + translation;
     }
 };
 
-/// A zero-width line segment: query only, can't be stored in a tree.
+/// A zero-width line segment covering [start, end]
 pub const Line2f = struct {
     start: [2]f32,
     end: [2]f32,
     const Self = @This();
 
     pub fn getBoundingBox(self: Self) Box2f {
-        return .{ .min = @min(self.start, self.end), .max = @max(self.start, self.end) };
+        return .{
+            .min = @min(@as(Vec2f, self.start), @as(Vec2f, self.end)),
+            .max = @max(@as(Vec2f, self.start), @as(Vec2f, self.end)),
+        };
+    }
+
+    pub fn getCentre(self: Self) Vec2f {
+        const vec_sum = @as(Vec2f, self.start) + @as(Vec2f, self.end);
+        return calc.scaledVec(0.5, vec_sum);
+    }
+
+    pub fn getScaled(self: Self, factor: f32) Line2f {
+        const centre = self.getCentre();
+        const d = @as(Vec2f, self.end) - @as(Vec2f, self.start);
+        return .{
+            .start = centre - calc.scaledVec(0.5 * factor, d),
+            .end = centre + calc.scaledVec(0.5 * factor, d),
+        };
+    }
+
+    pub fn isEmpty(_: Self) bool {
+        return false; // the interval [start, end] is never empty
+    }
+
+    pub fn translate(self: *Self, translation: Vec2f) void {
+        self.start = @as(Vec2f, self.start) + translation;
+        self.end = @as(Vec2f, self.end) + translation;
     }
 };
 
@@ -161,28 +200,29 @@ pub fn checkVolumesOverlap(a: anytype, b: anytype) bool {
         Ball2f => switch (@TypeOf(b)) {
             Ball2f => checkOverlapBallBall(a, b),
             Box2f => checkOverlapBallBox(a, b),
-            OrientedBox2f => checkOverlapOrientedBoxBall(b, a),
             Line2f => checkOverlapLineBall(b, a),
+            OrientedBox2f => checkOverlapOrientedBoxBall(b, a),
             else => unreachable,
         },
         Box2f => switch (@TypeOf(b)) {
             Ball2f => checkOverlapBallBox(b, a),
             Box2f => checkOverlapBoxBox(a, b),
-            OrientedBox2f => checkOverlapOrientedBoxBox(b, a),
             Line2f => checkOverlapLineBox(b, a),
-            else => unreachable,
-        },
-        OrientedBox2f => switch (@TypeOf(b)) {
-            Ball2f => checkOverlapOrientedBoxBall(a, b),
-            Box2f => checkOverlapOrientedBoxBox(a, b),
-            OrientedBox2f => checkOverlapOrientedBoxOrientedBox(a, b),
-            Line2f => checkOverlapLineOrientedBox(b, a),
+            OrientedBox2f => checkOverlapOrientedBoxBox(b, a),
             else => unreachable,
         },
         Line2f => switch (@TypeOf(b)) {
             Ball2f => checkOverlapLineBall(a, b),
             Box2f => checkOverlapLineBox(a, b),
+            Line2f => checkOverlapLineLine(a, b),
             OrientedBox2f => checkOverlapLineOrientedBox(a, b),
+            else => unreachable,
+        },
+        OrientedBox2f => switch (@TypeOf(b)) {
+            Ball2f => checkOverlapOrientedBoxBall(a, b),
+            Box2f => checkOverlapOrientedBoxBox(a, b),
+            Line2f => checkOverlapLineOrientedBox(b, a),
+            OrientedBox2f => checkOverlapOrientedBoxOrientedBox(a, b),
             else => unreachable,
         },
         else => unreachable, // overlap check has not been implemented for this volume
@@ -202,27 +242,53 @@ pub fn getBoundingBox(a: anytype, b: anytype) Box2f {
 fn checkOverlapBallBall(a: Ball2f, b: Ball2f) bool {
     const vec_diff = @as(Vec2f, a.centre) - @as(Vec2f, b.centre);
     const r_sum = a.radius + b.radius;
-    return calc.squaredSum(vec_diff) < r_sum * r_sum;
+    return calc.squaredSum(vec_diff) <= r_sum * r_sum;
 }
 
 fn checkOverlapBoxBox(a: Box2f, b: Box2f) bool {
     const lo = @shuffle(f32, a.min, b.min, [4]i32{ 0, 1, -1, -2 }); // {a.min, b.min}
     const hi = @shuffle(f32, b.max, a.max, [4]i32{ 0, 1, -1, -2 }); // {b.max, a.max}
-    return @reduce(.And, lo < hi);
+    return @reduce(.And, lo <= hi);
 }
 
 fn checkOverlapBallBox(a: Ball2f, b: Box2f) bool {
     const d_squared = calc.pointBoxDistSquared(a.centre, b.min, b.max);
-    return d_squared < a.radius * a.radius;
+    return d_squared <= a.radius * a.radius;
 }
 
 fn checkOverlapLineBall(line: Line2f, ball: Ball2f) bool {
     const d_squared = calc.pointSegDistSquared(ball.centre, line.start, line.end);
-    return d_squared < ball.radius * ball.radius;
+    return d_squared <= ball.radius * ball.radius;
 }
 
 fn checkOverlapLineBox(line: Line2f, box: Box2f) bool {
     return segmentIntersectsBox(line.start, line.end, box.min, box.max);
+}
+
+fn checkOverlapLineLine(line_a: Line2f, line_b: Line2f) bool {
+    const box_a = line_a.getBoundingBox();
+    const box_b = line_b.getBoundingBox();
+    if (!checkOverlapBoxBox(box_a, box_b)) return false;
+
+    const s_a: Vec2f = @as(Vec2f, line_a.start);
+    const d_a = @as(Vec2f, line_a.end) - s_a;
+    const s_b: Vec2f = @as(Vec2f, line_b.start);
+    const d_b = @as(Vec2f, line_b.end) - s_b;
+    const delta = s_b - s_a;
+
+    if (calc.squaredSum(d_a) == 0.0)
+        return calc.crossProduct(s_a - s_b, d_b) == 0.0;
+    if (calc.squaredSum(d_b) == 0.0)
+        return calc.crossProduct(s_b - s_a, d_a) == 0.0;
+
+    const denom = calc.crossProduct(d_a, d_b);
+    if (denom != 0.0) {
+        const t_a = calc.crossProduct(delta, d_b) / denom;
+        const t_b = calc.crossProduct(delta, d_a) / denom;
+        return (0.0 <= t_a and t_a <= 1.0) and (0.0 <= t_b and t_b <= 1.0);
+    } else { // parellel
+        return (calc.crossProduct(delta, d_a) == 0.0);
+    }
 }
 
 fn checkOverlapLineOrientedBox(line: Line2f, obb: OrientedBox2f) bool {
@@ -238,7 +304,7 @@ fn checkOverlapOrientedBoxBall(obb: OrientedBox2f, ball: Ball2f) bool {
     const pos_he: Vec2f = obb.half_extents;
     const neg_he: Vec2f = -pos_he;
     const d_squared = calc.pointBoxDistSquared(local, neg_he, pos_he);
-    return d_squared < ball.radius * ball.radius;
+    return d_squared <= ball.radius * ball.radius;
 }
 
 fn checkOverlapOrientedBoxBox(obb: OrientedBox2f, box: Box2f) bool {
@@ -284,7 +350,7 @@ fn checkOverlapOrientedBoxes(
         const y_radius_2 = he2[1] * @abs(calc.dotProduct(ay2, axis));
         const radius_1 = x_radius_1 + y_radius_1;
         const radius_2 = x_radius_2 + y_radius_2;
-        if (dist >= radius_1 + radius_2) return false;
+        if (dist > radius_1 + radius_2) return false;
     }
     return true;
 }
@@ -316,7 +382,15 @@ fn segmentIntersectsBox(start: Vec2f, end: Vec2f, box_min: Vec2f, box_max: Vec2f
 
 const testing = std.testing;
 
-test "balls overlap" {
+test "bounding boxes" {
+    const a = Box2f{ .min = .{ -0.139, -0.139 }, .max = .{ 0.139, 0.139 } };
+    const b = Box2f{ .min = .{ -0.735, -0.2 }, .max = .{ 0.2, 0.735 } };
+    const c = getBoundingBox(a, b);
+    try testing.expectEqual(@min(@as(Vec2f, a.min), @as(Vec2f, b.min)), c.min);
+    try testing.expectEqual(@max(@as(Vec2f, a.max), @as(Vec2f, b.max)), c.max);
+}
+
+test "ball-ball overlap" {
     const a = Ball2f{ .centre = .{ 0, 0 }, .radius = 1.0 };
     const b1 = Ball2f{ .centre = .{ 0.5, 0.5 }, .radius = 0.1 };
     const b2 = Ball2f{ .centre = .{ 1.5, 0.0 }, .radius = 0.6 };
@@ -329,10 +403,10 @@ test "balls overlap" {
     const check_3 = checkOverlapBallBall(a, b3);
     try testing.expectEqual(false, check_3);
     const check_4 = checkOverlapBallBall(a, b4);
-    try testing.expectEqual(false, check_4);
+    try testing.expectEqual(true, check_4);
 }
 
-test "boxes overlap" {
+test "box-box overlap" {
     const a = Box2f{ .min = .{ 0.0, 0.0 }, .max = .{ 1.0, 1.0 } };
     const b1 = Box2f{ .min = .{ 0.25, 0.25 }, .max = .{ 1.25, 1.25 } };
     const b2 = Box2f{ .min = .{ 0.5, 0.5 }, .max = .{ 0.75, 0.75 } };
@@ -348,7 +422,7 @@ test "boxes overlap" {
     try testing.expectEqual(false, check_4);
 }
 
-test "ball-box overlap" {
+test "box-ball overlap" {
     const a = Ball2f{ .centre = .{ 0.0, 0.0 }, .radius = 3 };
     const b1 = Box2f{ .min = .{ -1.0, -0.5 }, .max = .{ 1.0, 0.5 } };
     const b2 = Box2f{ .min = .{ -3.0, 4.5 }, .max = .{ 3.0, 5.5 } };
@@ -367,39 +441,55 @@ test "ball-box overlap" {
     try testing.expectEqual(true, check_5);
 }
 
-test "oriented box - ball overlap" {
-    const obb = OrientedBox2f{
-        .centre = .{ 0, 0 },
-        .half_extents = .{ 2, 1 },
-        .axis = .{ 0, 1 },
-    };
-    const b1 = Ball2f{ .centre = .{ 0.5, 1.5 }, .radius = 0.6 };
-    const b2 = Ball2f{ .centre = .{ 5, 5 }, .radius = 0.5 };
-    const b3 = Ball2f{ .centre = .{ 1.5, 0 }, .radius = 0.6 };
-    const b4 = Ball2f{ .centre = .{ 1.5, 0 }, .radius = 0.4 };
-    try testing.expectEqual(true, checkVolumesOverlap(obb, b1));
-    try testing.expectEqual(false, checkVolumesOverlap(obb, b2));
-    try testing.expectEqual(true, checkVolumesOverlap(obb, b3));
-    try testing.expectEqual(false, checkVolumesOverlap(obb, b4));
+test "line-line overlap" {
+    const a = Line2f{ .start = .{ 1, 1 }, .end = .{ 2, 2 } };
+    const b = Line2f{ .start = .{ 1, 2 }, .end = .{ 2, 1 } };
+    const c = Line2f{ .start = .{ 1, 2 }, .end = .{ 1.499, 1.501 } };
+    const d = Line2f{ .start = .{ 2, 2 }, .end = .{ 2, 2 } };
+    const e = Line2f{ .start = .{ 1, 1.001 }, .end = .{ 2, 2.001 } };
+    const check_b = checkVolumesOverlap(a, b);
+    const check_c = checkVolumesOverlap(a, c);
+    const check_d = checkVolumesOverlap(a, d);
+    const check_e = checkVolumesOverlap(a, e);
+    try testing.expectEqual(true, check_b);
+    try testing.expectEqual(false, check_c);
+    try testing.expectEqual(true, check_d);
+    try testing.expectEqual(false, check_e);
 }
 
-test "oriented box - box overlap" {
-    const obb = OrientedBox2f{
-        .centre = .{ 0, 0 },
-        .half_extents = .{ 3, 1 },
-        .axis = .{ 0, 1 },
-    };
-    const b1 = Box2f{ .min = .{ -0.5, -0.5 }, .max = .{ 0.5, 0.5 } };
-    const b2 = Box2f{ .min = .{ 2, 2 }, .max = .{ 3, 3 } };
-    const b3 = Box2f{ .min = .{ -10, -10 }, .max = .{ -9, -9 } };
-    const b4 = Box2f{ .min = .{ 0.8, 2.8 }, .max = .{ 1.5, 3.5 } };
-    try testing.expectEqual(true, checkVolumesOverlap(obb, b1));
-    try testing.expectEqual(false, checkVolumesOverlap(obb, b2));
-    try testing.expectEqual(false, checkVolumesOverlap(obb, b3));
-    try testing.expectEqual(true, checkVolumesOverlap(obb, b4));
+test "line-ball overlap" {
+    const line = Line2f{ .start = .{ 0, 0 }, .end = .{ 4, 0 } };
+    const b1 = Ball2f{ .centre = .{ 2, 0.3 }, .radius = 0.4 };
+    const b2 = Ball2f{ .centre = .{ 2, 3.0 }, .radius = 0.4 };
+    const b3 = Ball2f{ .centre = .{ -0.1, 0 }, .radius = 0.15 };
+    const b4 = Ball2f{ .centre = .{ 4.1, 0 }, .radius = 0.15 };
+    const b5 = Ball2f{ .centre = .{ 5, 0 }, .radius = 0.5 };
+    try testing.expectEqual(true, checkVolumesOverlap(line, b1));
+    try testing.expectEqual(false, checkVolumesOverlap(line, b2));
+    try testing.expectEqual(true, checkVolumesOverlap(line, b3));
+    try testing.expectEqual(true, checkVolumesOverlap(line, b4));
+    try testing.expectEqual(false, checkVolumesOverlap(line, b5));
+    try testing.expectEqual(true, checkVolumesOverlap(b1, line));
+    try testing.expectEqual(false, checkVolumesOverlap(b5, line));
 }
 
-test "oriented box - oriented box overlap" {
+test "line-box overlap" {
+    const line = Line2f{ .start = .{ 0, 0 }, .end = .{ 4, 0 } };
+    const b1 = Box2f{ .min = .{ 1, -0.2 }, .max = .{ 3, 0.2 } };
+    const b2 = Box2f{ .min = .{ 1, 2 }, .max = .{ 3, 3 } };
+    const b3 = Box2f{ .min = .{ -3, -3 }, .max = .{ -2, -2 } };
+    const b4 = Box2f{ .min = .{ -0.5, -0.5 }, .max = .{ 4.5, 0.5 } };
+    const b5 = Box2f{ .min = .{ 4, -1 }, .max = .{ 5, 1 } };
+    try testing.expectEqual(true, checkVolumesOverlap(line, b1));
+    try testing.expectEqual(false, checkVolumesOverlap(line, b2));
+    try testing.expectEqual(false, checkVolumesOverlap(line, b3));
+    try testing.expectEqual(true, checkVolumesOverlap(line, b4));
+    try testing.expectEqual(true, checkVolumesOverlap(line, b5));
+    try testing.expectEqual(true, checkVolumesOverlap(b1, line));
+    try testing.expectEqual(false, checkVolumesOverlap(b2, line));
+}
+
+test "ob-ob overlap" {
     const a = OrientedBox2f{
         .centre = .{ 0, 0 },
         .half_extents = .{ 1, 1 },
@@ -426,23 +516,39 @@ test "oriented box - oriented box overlap" {
     try testing.expectEqual(true, checkVolumesOverlap(b1, a));
 }
 
-test "line-ball overlap" {
-    const line = Line2f{ .start = .{ 0, 0 }, .end = .{ 4, 0 } };
-    const b1 = Ball2f{ .centre = .{ 2, 0.3 }, .radius = 0.4 };
-    const b2 = Ball2f{ .centre = .{ 2, 3.0 }, .radius = 0.4 };
-    const b3 = Ball2f{ .centre = .{ -0.1, 0 }, .radius = 0.15 };
-    const b4 = Ball2f{ .centre = .{ 4.1, 0 }, .radius = 0.15 };
-    const b5 = Ball2f{ .centre = .{ 5, 0 }, .radius = 0.5 };
-    try testing.expectEqual(true, checkVolumesOverlap(line, b1));
-    try testing.expectEqual(false, checkVolumesOverlap(line, b2));
-    try testing.expectEqual(true, checkVolumesOverlap(line, b3));
-    try testing.expectEqual(true, checkVolumesOverlap(line, b4));
-    try testing.expectEqual(false, checkVolumesOverlap(line, b5));
-    try testing.expectEqual(true, checkVolumesOverlap(b1, line));
-    try testing.expectEqual(false, checkVolumesOverlap(b5, line));
+test "ob-ball overlap" {
+    const obb = OrientedBox2f{
+        .centre = .{ 0, 0 },
+        .half_extents = .{ 2, 1 },
+        .axis = .{ 0, 1 },
+    };
+    const b1 = Ball2f{ .centre = .{ 0.5, 1.5 }, .radius = 0.6 };
+    const b2 = Ball2f{ .centre = .{ 5, 5 }, .radius = 0.5 };
+    const b3 = Ball2f{ .centre = .{ 1.5, 0 }, .radius = 0.6 };
+    const b4 = Ball2f{ .centre = .{ 1.5, 0 }, .radius = 0.4 };
+    try testing.expectEqual(true, checkVolumesOverlap(obb, b1));
+    try testing.expectEqual(false, checkVolumesOverlap(obb, b2));
+    try testing.expectEqual(true, checkVolumesOverlap(obb, b3));
+    try testing.expectEqual(false, checkVolumesOverlap(obb, b4));
 }
 
-test "line - oriented box overlap" {
+test "ob-box overlap" {
+    const obb = OrientedBox2f{
+        .centre = .{ 0, 0 },
+        .half_extents = .{ 3, 1 },
+        .axis = .{ 0, 1 },
+    };
+    const b1 = Box2f{ .min = .{ -0.5, -0.5 }, .max = .{ 0.5, 0.5 } };
+    const b2 = Box2f{ .min = .{ 2, 2 }, .max = .{ 3, 3 } };
+    const b3 = Box2f{ .min = .{ -10, -10 }, .max = .{ -9, -9 } };
+    const b4 = Box2f{ .min = .{ 0.8, 2.8 }, .max = .{ 1.5, 3.5 } };
+    try testing.expectEqual(true, checkVolumesOverlap(obb, b1));
+    try testing.expectEqual(false, checkVolumesOverlap(obb, b2));
+    try testing.expectEqual(false, checkVolumesOverlap(obb, b3));
+    try testing.expectEqual(true, checkVolumesOverlap(obb, b4));
+}
+
+test "ob-line overlap" {
     const obb = OrientedBox2f{ .centre = .{ 0, 0 }, .half_extents = .{ 3, 1 }, .axis = .{ 0, 1 } };
     const through = Line2f{ .start = .{ -2, 0 }, .end = .{ 2, 0 } };
     const miss_far = Line2f{ .start = .{ 2, 2 }, .end = .{ 3, 3 } };
@@ -454,28 +560,4 @@ test "line - oriented box overlap" {
     try testing.expectEqual(true, checkVolumesOverlap(inside, obb));
     try testing.expectEqual(true, checkVolumesOverlap(obb, through));
     try testing.expectEqual(false, checkVolumesOverlap(obb, miss_rotated));
-}
-
-test "line-box overlap" {
-    const line = Line2f{ .start = .{ 0, 0 }, .end = .{ 4, 0 } };
-    const b1 = Box2f{ .min = .{ 1, -0.2 }, .max = .{ 3, 0.2 } };
-    const b2 = Box2f{ .min = .{ 1, 2 }, .max = .{ 3, 3 } };
-    const b3 = Box2f{ .min = .{ -3, -3 }, .max = .{ -2, -2 } };
-    const b4 = Box2f{ .min = .{ -0.5, -0.5 }, .max = .{ 4.5, 0.5 } };
-    const b5 = Box2f{ .min = .{ 4, -1 }, .max = .{ 5, 1 } };
-    try testing.expectEqual(true, checkVolumesOverlap(line, b1));
-    try testing.expectEqual(false, checkVolumesOverlap(line, b2));
-    try testing.expectEqual(false, checkVolumesOverlap(line, b3));
-    try testing.expectEqual(true, checkVolumesOverlap(line, b4));
-    try testing.expectEqual(true, checkVolumesOverlap(line, b5));
-    try testing.expectEqual(true, checkVolumesOverlap(b1, line));
-    try testing.expectEqual(false, checkVolumesOverlap(b2, line));
-}
-
-test "encompassing boxes" {
-    const a = Box2f{ .min = .{ -0.139, -0.139 }, .max = .{ 0.139, 0.139 } };
-    const b = Box2f{ .min = .{ -0.735, -0.2 }, .max = .{ 0.2, 0.735 } };
-    const c = getBoundingBox(a, b);
-    try testing.expectEqual(@min(@as(Vec2f, a.min), @as(Vec2f, b.min)), c.min);
-    try testing.expectEqual(@max(@as(Vec2f, a.max), @as(Vec2f, b.max)), c.max);
 }

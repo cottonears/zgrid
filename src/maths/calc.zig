@@ -119,6 +119,11 @@ pub fn squaredSum(v: Vec2f) f32 {
     return dotProduct(v, v);
 }
 
+/// Returns a x b, the cross product of a and b.
+pub fn crossProduct(a: Vec2f, b: Vec2f) f32 {
+    return a[0] * b[1] - a[1] * b[0];
+}
+
 /// Returns < a, b >, the dot product a and b.
 pub fn dotProduct(a: Vec2f, b: Vec2f) f32 {
     return @reduce(.Add, a * b);
