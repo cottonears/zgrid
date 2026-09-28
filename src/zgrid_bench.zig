@@ -257,7 +257,7 @@ fn benchmarkIndexing(allocator: Allocator, io: std.Io) !void {
 fn benchmarkSquareTrees(allocator: Allocator, io: std.Io) !void {
     // these params control the amount + extent of per-frame external overlap + neighbour queries
     const ext_overlap_amount: f32 = 0.05; // number queries = 5% of number of vols
-    const ext_overlap_scale: f32 = 0.05; // query radius is 5% of world extent
+    const ext_overlap_scale: f32 = 0.025; // query diameter is 5% of world extent
     const near_search_k: u8 = 5; // each neighbourhood search finds the 5 nearest vols
     const near_search_amount: f32 = 0.05; // number queries = 5% of number of vols
     const near_search_scale: f32 = 0.05; // max query radius = 5% of world extent
