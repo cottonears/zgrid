@@ -247,9 +247,9 @@ pub fn SquareTree(
             } else { // large tree: store counts in self.leaf_starts before offset pass
                 @memset(self.leaf_starts, 0);
                 for (self.staged_indexes[0..num_vols]) |i| {
-                    const count = self.leaf_starts[i + 1];
+                    const count = self.leaf_starts[@as(usize, i) + 1];
                     if (count == math.maxInt(DataIndex)) return Error.LeafCapacityExceeded;
-                    self.leaf_starts[i + 1] = count + 1;
+                    self.leaf_starts[@as(usize, i) + 1] = count + 1;
                 }
                 self.leaf_starts[0] = 0;
                 var offset: StartIndex = 0;
@@ -760,19 +760,20 @@ pub fn SquareTree(
 const testing = std.testing;
 const test_alloc = testing.allocator;
 const test_capacity = 1000;
+const Indexer2f = index.Indexer2f;
 
 test "square tree init + deinit" {
     // check for memory leaks
-    const Tree2x2 = SquareTree(index.Indexer2f(.Morton4, 1), Ball2f, u16);
+    const Tree2x2 = SquareTree(Indexer2f(.Morton4, 1), Ball2f, u16);
     var qt = try Tree2x2.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0);
     defer qt.deinit(test_alloc);
-    const Tree4x2 = SquareTree(index.Indexer2f(.Zigzag16, 1), Ball2f, u16);
+    const Tree4x2 = SquareTree(Indexer2f(.Zigzag16, 1), Ball2f, u16);
     var ht = try Tree4x2.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0);
     defer ht.deinit(test_alloc);
 }
 
 test "square tree add remove" {
-    const IndexerM2x4 = index.Indexer2f(.Morton16, 1);
+    const IndexerM2x4 = Indexer2f(.Morton16, 1);
     const QuadTree = SquareTree(IndexerM2x4, Ball2f, u32);
     var qt = try QuadTree.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0);
     defer qt.deinit(test_alloc);
@@ -799,7 +800,7 @@ test "square tree add remove" {
 }
 
 test "hex tree overlap ball" {
-    const HexTree2 = SquareTree(index.Indexer2f(.Zigzag16, 1), Ball2f, u16);
+    const HexTree2 = SquareTree(Indexer2f(.Zigzag16, 1), Ball2f, u16);
     var tree = try HexTree2.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 8);
     defer tree.deinit(test_alloc);
     var balls = [3]Ball2f{
@@ -835,7 +836,7 @@ test "hex tree overlap ball" {
 }
 
 test "short overlap buffer returns a capacity error" {
-    const Tree = SquareTree(index.Indexer2f(.Zigzag16, 1), Ball2f, u32);
+    const Tree = SquareTree(Indexer2f(.Zigzag16, 1), Ball2f, u32);
     var tree = try Tree.init(test_alloc, .{ -1, -1 }, .{ 1, 1 }, 16, 0);
     defer tree.deinit(test_alloc);
     const balls = [_]Ball2f{.{ .centre = .{ 0, 0 }, .radius = 0.5 }} ** 16;
@@ -852,7 +853,7 @@ test "short overlap buffer returns a capacity error" {
 }
 
 test "hex tree overlap box" {
-    const HexTree2 = SquareTree(index.Indexer2f(.Zigzag16, 1), Box2f, u16);
+    const HexTree2 = SquareTree(Indexer2f(.Zigzag16, 1), Box2f, u16);
     var tree = try HexTree2.init(test_alloc, .{ 0, 0 }, .{ 1, 1 }, test_capacity, 0);
     defer tree.deinit(test_alloc);
     const boxes = [_]Box2f{
@@ -890,7 +891,7 @@ test "tree occupancy counts are accurate" {
     var pos_dist = prob.ProbDensityFunc{
         .normal = .{ .mean = 0.0, .stddev = 1.0 },
     };
-    const Indexer = index.Indexer2f(.Zigzag16, 1);
+    const Indexer = Indexer2f(.Zigzag16, 1);
     const Tree = SquareTree(Indexer, Ball2f, u16);
     var tree = try Tree.init(test_alloc, .{ -4, -4 }, .{ 4, 4 }, test_capacity, 1);
     defer tree.deinit(test_alloc);
