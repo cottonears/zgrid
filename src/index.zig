@@ -420,7 +420,7 @@ test "check get leaf cell neighbours near edge" {
     const Indexer = Indexer2f(Curve.Zigzag256, 1);
     const p_idx: Indexer.CurveIndex = 0;
     const p_gc = Indexer.getGridCoordsForIndex(p_idx);
-    var idx_seen = [_]bool{false} ** Indexer.num_leaves;
+    var idx_seen: [Indexer.num_leaves]bool = @splat(false);
     var buf: [Indexer.num_leaves]Indexer.CurveIndex = undefined;
     var n: usize = 0;
     // search for successive rings of nearby indexes; iterate to cover the whole grid

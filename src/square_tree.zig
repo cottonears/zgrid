@@ -839,7 +839,7 @@ test "short overlap buffer returns a capacity error" {
     const Tree = SquareTree(Indexer2f(.Zigzag16, 1), Ball2f, u32);
     var tree = try Tree.init(test_alloc, .{ -1, -1 }, .{ 1, 1 }, 16, 0);
     defer tree.deinit(test_alloc);
-    const balls = [_]Ball2f{.{ .centre = .{ 0, 0 }, .radius = 0.5 }} ** 16;
+    const balls: [16]Ball2f = @splat(.{ .centre = .{ 0, 0 }, .radius = 0.5 });
     const ids = calc.getRange(u32, balls.len);
 
     // add the volumes and check the expected error ius retturned
@@ -904,7 +904,7 @@ test "tree occupancy counts are accurate" {
     try tree.build();
 
     // compute leaf occupancy rates
-    var leaf_counts = [_]usize{0} ** Tree.num_leaves;
+    var leaf_counts: [Tree.num_leaves]usize = @splat(0);
     for (centres) |centre| {
         const leaf = tree.indexer.getLeafIndexForPoint(centre);
         leaf_counts[leaf] += 1;

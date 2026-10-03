@@ -5,6 +5,7 @@ const prob = @import("maths/prob.zig");
 const volume = @import("maths/volume.zig");
 const math = std.math;
 const Allocator = std.mem.Allocator;
+const Timestamp = std.Io.Timestamp;
 const Box2f = volume.Box2f;
 const Ball2f = volume.Ball2f;
 const Line2f = volume.Line2f;
@@ -23,16 +24,16 @@ pub fn printErrorMessageForRandomSeed(seed: u64) void {
     std.debug.print("Error when testing with random data; seed = {d}\n", .{seed});
 }
 
-pub fn elapsedMs(t1: std.Io.Timestamp, t2: std.Io.Timestamp) f64 {
-    return elapsedNs(t1, t2) / @as(f64, @floatCast(std.time.ns_per_ms));
+pub fn elapsedMs(t1: Timestamp, t2: Timestamp) f64 {
+    return elapsedNs(t1, t2) / std.time.ns_per_ms;
 }
 
-pub fn elapsedNs(t1: std.Io.Timestamp, t2: std.Io.Timestamp) f64 {
-    return @floatFromInt(std.Io.Timestamp.durationTo(t1, t2).toNanoseconds());
+pub fn elapsedNs(t1: Timestamp, t2: Timestamp) f64 {
+    return @floatFromInt(Timestamp.durationTo(t1, t2).toNanoseconds());
 }
 
-pub fn elapsedUs(t1: std.Io.Timestamp, t2: std.Io.Timestamp) f64 {
-    return elapsedNs(t1, t2) / @as(f64, @floatCast(std.time.ns_per_us));
+pub fn elapsedUs(t1: Timestamp, t2: Timestamp) f64 {
+    return elapsedNs(t1, t2) / std.time.ns_per_us;
 }
 
 /// Stores several columns of same-typed data and provides helpers for computing stats + printing.
@@ -340,6 +341,13 @@ pub const TestVolumes = struct {
             OrientedBox2f => self.obbs.items,
             else => @compileError("Unsupported volume type: " ++ @typeName(T)),
         };
+    }
+
+    pub fn totalVolumes(self: *const Self) usize {
+        return self.balls.items.len +
+            self.boxes.items.len +
+            self.lines.items.len +
+            self.obbs.items.len;
     }
 
     fn parseCsvFloat(fields: *std.mem.SplitIterator(u8, .scalar)) !f32 {

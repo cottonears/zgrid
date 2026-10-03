@@ -23,10 +23,12 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "zgrid", .module = mod }},
         }),
     });
+    const install_exe = b.addInstallArtifact(exe, .{});
+    const bench_step = b.step("bench", "Build and install benchmark CLI");
+    bench_step.dependOn(&install_exe.step);
+
     const run_step = b.step("run", "Run benchmarks");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 }

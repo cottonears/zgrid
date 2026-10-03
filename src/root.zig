@@ -192,7 +192,7 @@ test "tree neighbours matches brute force" {
     var points: [num_volumes]Vec2f = undefined;
     var excl_ids: [num_volumes]?Tree.ClientId = undefined;
     for (boxes, indexes, 0..) |box_a, id_a, i| {
-        var nearest = ([1]Tree.Neighbour{.{ .id = 0, .dist = std.math.floatMax(f32) }}) ** 3;
+        var nearest: [3]Tree.Neighbour = @splat(.{ .id = 0, .dist = std.math.floatMax(f32) });
         const a_centre = box_a.getCentre();
         for (boxes, indexes) |box_b, id_b| {
             if (id_a == id_b) continue;

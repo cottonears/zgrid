@@ -29,28 +29,36 @@ const usage_msg =
     \\Usage: zgrid-bench [options]
     \\  -i: Set an input file (csv or txt) to load test volumes from (see readme for correct format)
     \\  -t: Number of times to repeat each benchmark (for stable timing averages); default = 100
+    \\  -v: Number of volumes in each benchmark; default = 10,000
     \\
 ;
 var input_file: ?[]const u8 = null;
 var output_dir: ?[]const u8 = null;
 var random_vols: TestVolumes = undefined;
-var num_trials: u8 = 60;
+var num_trials: usize = 60;
+var num_vols: usize = 10_000;
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = init.arena.allocator();
+    // safe allocator used in debug to check for leaks
+    var safe = std.heap.SafeAllocator.init(std.heap.page_allocator, .{});
+    defer if (builtin.mode == .debug) {
+        const leaks = safe.deinit();
+        std.debug.print("Benchmarks finished with {d} leaks.\n", .{leaks});
+        std.debug.assert(leaks == 0);
+    };
+    const allocator = if (builtin.mode == .debug) safe.allocator() else init.arena.allocator();
+
     var args_iter = try ArgsIter.initAllocator(init.minimal.args, allocator);
     defer args_iter.deinit();
-    _ = args_iter.next(); // skip the program name
     try processArgs(init.io, &args_iter);
 
-    if (input_file) |file| {
+    if (input_file) |file| { // custom scene
         random_vols = try TestVolumes.initCsv(allocator, init.io, file);
         std.debug.print(
             "Running benchmarks using volumes from '{s}' (trials = {})...\n",
             .{ file, num_trials },
         );
-    } else { // default built-in benchmark
-        const num_vols = 20_000;
+    } else { // built-in benchmark
         const pos_dist: ProbDensityFunc = .{ .normal = .{ .mean = 5.0, .stddev = 1.5 } };
         const size_dist: ProbDensityFunc = .{ .uniform = .{ .min = 0.001, .max = 0.05 } };
         var prng = std.Random.DefaultPrng.init(0);
@@ -61,6 +69,10 @@ pub fn main(init: std.process.Init) !void {
         );
     }
     defer random_vols.deinit(allocator);
+    if (random_vols.totalVolumes() == 0) {
+        std.debug.print("Input contains no volumes.\n", .{});
+        return error.NoVolumes;
+    }
 
     try benchmarkOverlapChecks(allocator, init.io);
     try benchmarkIndexing(allocator, init.io);
@@ -75,6 +87,7 @@ fn nextArgValue(args_iter: *ArgsIter, flag: []const u8) ![:0]const u8 {
 }
 
 fn processArgs(io: std.Io, args_iter: *ArgsIter) !void {
+    _ = args_iter.next();
     while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "-i")) {
             const file = try nextArgValue(args_iter, arg);
@@ -86,7 +99,7 @@ fn processArgs(io: std.Io, args_iter: *ArgsIter) !void {
             input_file = file;
         } else if (std.mem.eql(u8, arg, "-t")) {
             const val_str = try nextArgValue(args_iter, arg);
-            num_trials = std.fmt.parseInt(u8, val_str, 10) catch {
+            num_trials = std.fmt.parseInt(usize, val_str, 10) catch {
                 std.debug.print("Could not parse trial count '{s}':\n{s}", .{ val_str, usage_msg });
                 return error.InvalidTrialCount;
             };
@@ -96,6 +109,19 @@ fn processArgs(io: std.Io, args_iter: *ArgsIter) !void {
                     .{ num_trials, min_trials, usage_msg },
                 );
                 return error.TooFewTrials;
+            }
+        } else if (std.mem.eql(u8, arg, "-v")) {
+            const val_str = try nextArgValue(args_iter, arg);
+            num_vols = std.fmt.parseInt(usize, val_str, 10) catch {
+                std.debug.print("Could not parse volume count '{s}':\n{s}", .{ val_str, usage_msg });
+                return error.InvalidTrialCount;
+            };
+            if (num_vols < min_num_vols) {
+                std.debug.print(
+                    "Requested {} volumes is below the minimum required ({}).\n{s}",
+                    .{ num_vols, min_num_vols, usage_msg },
+                );
+                return error.TooFewVolumes;
             }
         } else {
             std.debug.print("Unrecognised argument '{s}'.\n{s}", .{ arg, usage_msg });
@@ -350,10 +376,10 @@ fn benchmarkTree(
     var tree = try TreeType.init(allocator, .{ 0, 0 }, .{ extent, extent }, max_capacity, 0);
     defer tree.deinit(allocator);
     const headers: [6][]const u8 = .{
-        " add  ", " update ", " self-overlap ", " ext-overlap ", " neighbour ", " tick     ",
+        " add   ", " update ", " self-overlap ", " ext-overlap ", " neighbour ", " tick     ",
     };
     const formats: [6][]const u8 = .{
-        " {d:>3.1}% ", " {d:>5.1}% ", " {d:>11.1}% ", " {d:>10.1}% ", " {d:>8.1}% ", " {d:>5.2} ms ",
+        " {d:>4.1}% ", " {d:>5.1}% ", " {d:>11.1}% ", " {d:>10.1}% ", " {d:>8.1}% ", " {d:>5.2} ms ",
     };
 
     const TreeTable = DataTable(f64, 6, "| {s:<24} |", headers, formats);
@@ -369,8 +395,10 @@ fn benchmarkTree(
     const ext_query_ids = entity_indexes[0..ext_overlap_count];
     const ext_query_vols = try allocator.alloc(Ball2f, ext_overlap_count);
     defer allocator.free(ext_query_vols);
-    var query_template = random_vols.balls.items[0];
-    query_template.radius = extent * ext_overlap_scale;
+    const query_template: Ball2f = .{
+        .centre = .{ 0, 0 },
+        .radius = extent * ext_overlap_scale,
+    };
     for (bodies[0..ext_overlap_count], ext_query_vols) |body, *query| {
         query.* = query_template;
         query.centre = body.getCentre();

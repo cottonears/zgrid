@@ -56,7 +56,7 @@ pub fn radixPass8(
     std.debug.assert(in_keys.len == in_vals.len);
     std.debug.assert(in_keys.len == out_keys.len);
     std.debug.assert(in_vals.len == out_vals.len);
-    var counts = [_]u32{0} ** 256;
+    var counts: [256]u32 = @splat(0);
     for (in_keys) |key| {
         const digit: u8 = @truncate(key >> @intCast(shift));
         counts[digit] += 1;

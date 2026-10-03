@@ -13,7 +13,7 @@ Other spatial data structures are planned once the public API of `SquareTree` ha
 
 
 ## Prerequisites
-Zig 0.16.
+Zig 0.17.
 
 
 ## Installation
