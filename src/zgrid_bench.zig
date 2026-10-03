@@ -7,33 +7,27 @@ const volume = zgrid.volume;
 const test_utils = zgrid.test_utils;
 const timer = std.Io.Clock.awake;
 const Allocator = std.mem.Allocator;
-const ArgsIter = std.process.Args.Iterator;
 const Vec2f = zgrid.Vec2f;
 const Ball2f = zgrid.Ball2f;
 const Box2f = zgrid.Box2f;
 const Line2f = zgrid.Line2f;
 const OrientedBox2f = zgrid.OrientedBox2f;
+const Indexer2f = zgrid.Indexer2f;
+const SquareTree = zgrid.SquareTree;
 const DataTable = zgrid.test_utils.DataTable;
 const ProbDensityFunc = zgrid.prob.ProbDensityFunc;
 const TestVolumes = zgrid.test_utils.TestVolumes;
-const Indexer2f = zgrid.Indexer2f;
-const SquareTree = zgrid.SquareTree;
 
 const max_capacity = 200_000;
-const min_trials = 20;
-const min_num_vols = 100;
 const stat_header = "percentile";
 const stat_percentiles: [2]u8 = .{ 50, 95 };
 const untimed_trials = 3;
 const usage_msg =
     \\Usage: zgrid-bench [options]
-    \\  -i: Set an input file (csv or txt) to load test volumes from (see readme for correct format)
     \\  -t: Number of times to repeat each benchmark (for stable timing averages); default = 100
     \\  -v: Number of volumes in each benchmark; default = 10,000
     \\
 ;
-var input_file: ?[]const u8 = null;
-var output_dir: ?[]const u8 = null;
 var random_vols: TestVolumes = undefined;
 var num_trials: usize = 60;
 var num_vols: usize = 10_000;
@@ -48,86 +42,41 @@ pub fn main(init: std.process.Init) !void {
     };
     const allocator = if (builtin.mode == .debug) safe.allocator() else init.arena.allocator();
 
-    var args_iter = try ArgsIter.initAllocator(init.minimal.args, allocator);
-    defer args_iter.deinit();
-    try processArgs(init.io, &args_iter);
-
-    if (input_file) |file| { // custom scene
-        random_vols = try TestVolumes.initCsv(allocator, init.io, file);
-        std.debug.print(
-            "Running benchmarks using volumes from '{s}' (trials = {})...\n",
-            .{ file, num_trials },
-        );
-    } else { // built-in benchmark
-        const pos_dist: ProbDensityFunc = .{ .normal = .{ .mean = 5.0, .stddev = 1.5 } };
-        const size_dist: ProbDensityFunc = .{ .uniform = .{ .min = 0.001, .max = 0.05 } };
-        var prng = std.Random.DefaultPrng.init(0);
-        random_vols = try TestVolumes.initRandom(allocator, prng.random(), num_vols, size_dist, pos_dist);
-        std.debug.print(
-            "Running benchmarks for {} random vols (trials = {})...\n\n",
-            .{ num_vols, num_trials },
-        );
-    }
-    defer random_vols.deinit(allocator);
-    if (random_vols.totalVolumes() == 0) {
-        std.debug.print("Input contains no volumes.\n", .{});
-        return error.NoVolumes;
-    }
-
-    try benchmarkOverlapChecks(allocator, init.io);
-    try benchmarkIndexing(allocator, init.io);
-    try benchmarkSquareTrees(allocator, init.io);
-}
-
-fn nextArgValue(args_iter: *ArgsIter, flag: []const u8) ![:0]const u8 {
-    return args_iter.next() orelse {
-        std.debug.print("Missing value for '{s}'.\n{s}", .{ flag, usage_msg });
-        return error.MissingArgumentValue;
-    };
-}
-
-fn processArgs(io: std.Io, args_iter: *ArgsIter) !void {
-    _ = args_iter.next();
-    while (args_iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-i")) {
-            const file = try nextArgValue(args_iter, arg);
-            const cwd = std.Io.Dir.cwd();
-            cwd.access(io, file, .{ .read = true }) catch |err| {
-                std.debug.print("Unable to read from {s}\n", .{file});
-                return err;
-            };
-            input_file = file;
-        } else if (std.mem.eql(u8, arg, "-t")) {
-            const val_str = try nextArgValue(args_iter, arg);
+    var arg_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer arg_iter.deinit();
+    _ = arg_iter.next();
+    while (arg_iter.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-t")) {
+            const val_str = arg_iter.next() orelse return error.MissingArgumentValue;
             num_trials = std.fmt.parseInt(usize, val_str, 10) catch {
                 std.debug.print("Could not parse trial count '{s}':\n{s}", .{ val_str, usage_msg });
                 return error.InvalidTrialCount;
             };
-            if (num_trials < min_trials) {
-                std.debug.print(
-                    "Requested {} trials is below the minimum required ({}).\n{s}",
-                    .{ num_trials, min_trials, usage_msg },
-                );
-                return error.TooFewTrials;
-            }
         } else if (std.mem.eql(u8, arg, "-v")) {
-            const val_str = try nextArgValue(args_iter, arg);
+            const val_str = arg_iter.next() orelse return error.MissingArgumentValue;
             num_vols = std.fmt.parseInt(usize, val_str, 10) catch {
                 std.debug.print("Could not parse volume count '{s}':\n{s}", .{ val_str, usage_msg });
                 return error.InvalidTrialCount;
             };
-            if (num_vols < min_num_vols) {
-                std.debug.print(
-                    "Requested {} volumes is below the minimum required ({}).\n{s}",
-                    .{ num_vols, min_num_vols, usage_msg },
-                );
-                return error.TooFewVolumes;
-            }
         } else {
             std.debug.print("Unrecognised argument '{s}'.\n{s}", .{ arg, usage_msg });
             return error.UnrecognisedArgument;
         }
     }
+
+    const pos_dist: ProbDensityFunc = .{ .normal = .{ .mean = 5.0, .stddev = 1.5 } };
+    const size_dist: ProbDensityFunc = .{ .uniform = .{ .min = 0.001, .max = 0.1 } };
+    var prng = std.Random.DefaultPrng.init(0);
+    random_vols = try TestVolumes.initRandom(allocator, prng.random(), num_vols, size_dist, pos_dist);
+    defer random_vols.deinit(allocator);
+
+    std.debug.print(
+        "Running benchmarks for {} random vols (trials = {})...\n\n",
+        .{ num_vols, num_trials },
+    );
+    try benchmarkOverlapChecks(allocator, init.io);
+    try benchmarkIndexing(allocator, init.io);
+    try benchmarkSquareTrees(allocator, init.io);
 }
 
 fn benchmarkOverlapChecks(allocator: Allocator, io: std.Io) !void {

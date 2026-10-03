@@ -251,81 +251,6 @@ pub const TestVolumes = struct {
         };
     }
 
-    /// Loads test volumes from a csv file; rows must match below format:
-    ///  - ball, centre_x, centre_y, radius
-    ///  - box, min_x, min_y, max_x, max_y
-    ///  - line, start_x, start_y, end_x, end_y
-    ///  - obb, centre_x, centre_y, half_extent_x, half_extent_y, axis_x, axis_y
-    pub fn initCsv(allocator: Allocator, io: std.Io, filepath: []const u8) !Self {
-        const cwd = std.Io.Dir.cwd();
-        const contents = try cwd.readFileAlloc(io, filepath, allocator, .unlimited);
-        defer allocator.free(contents);
-
-        var balls: std.ArrayList(Ball2f) = .empty;
-        errdefer balls.deinit(allocator);
-        var boxes: std.ArrayList(Box2f) = .empty;
-        errdefer boxes.deinit(allocator);
-        var lines: std.ArrayList(Line2f) = .empty;
-        errdefer lines.deinit(allocator);
-        var obbs: std.ArrayList(OrientedBox2f) = .empty;
-        errdefer obbs.deinit(allocator);
-
-        var text_lines = std.mem.tokenizeAny(u8, contents, "\r\n");
-        while (text_lines.next()) |txt| {
-            const trimmed = std.mem.trim(u8, txt, " \t");
-            if (trimmed.len == 0) continue;
-            var fields = std.mem.splitScalar(u8, trimmed, ',');
-            const col_0 = fields.next() orelse return error.InvalidCsvRow;
-            const kind = std.mem.trim(u8, col_0, " \t");
-            if (std.ascii.eqlIgnoreCase(kind, "ball")) {
-                const cx = try parseCsvFloat(&fields);
-                const cy = try parseCsvFloat(&fields);
-                const r = try parseCsvFloat(&fields);
-                const b = Ball2f{ .centre = .{ cx, cy }, .radius = r };
-                try balls.append(allocator, b);
-            } else if (std.ascii.eqlIgnoreCase(kind, "box")) {
-                const lx = try parseCsvFloat(&fields);
-                const ly = try parseCsvFloat(&fields);
-                const hx = try parseCsvFloat(&fields);
-                const hy = try parseCsvFloat(&fields);
-                const b = Box2f{ .min = .{ lx, ly }, .max = .{ hx, hy } };
-                try boxes.append(allocator, b);
-            } else if (std.ascii.eqlIgnoreCase(kind, "line")) {
-                const sx = try parseCsvFloat(&fields);
-                const sy = try parseCsvFloat(&fields);
-                const ex = try parseCsvFloat(&fields);
-                const ey = try parseCsvFloat(&fields);
-                const l = Line2f{ .start = .{ sx, sy }, .end = .{ ex, ey } };
-                try lines.append(allocator, l);
-            } else if (std.ascii.eqlIgnoreCase(kind, "obb")) {
-                const cx = try parseCsvFloat(&fields);
-                const cy = try parseCsvFloat(&fields);
-                const hx = try parseCsvFloat(&fields);
-                const hy = try parseCsvFloat(&fields);
-                const ax = try parseCsvFloat(&fields);
-                const ay = try parseCsvFloat(&fields);
-                const ob = OrientedBox2f{
-                    .centre = .{ cx, cy },
-                    .half_extents = .{ hx, hy },
-                    .axis = .{ ax, ay },
-                };
-                try obbs.append(allocator, ob);
-            } else {
-                return error.UnknownVolumeType;
-            }
-        }
-        balls.shrinkAndFree(allocator, balls.items.len);
-        boxes.shrinkAndFree(allocator, boxes.items.len);
-        lines.shrinkAndFree(allocator, lines.items.len);
-        obbs.shrinkAndFree(allocator, obbs.items.len);
-        return .{
-            .balls = balls,
-            .boxes = boxes,
-            .lines = lines,
-            .obbs = obbs,
-        };
-    }
-
     pub fn deinit(self: *Self, allocator: Allocator) void {
         self.balls.deinit(allocator);
         self.boxes.deinit(allocator);
@@ -348,11 +273,5 @@ pub const TestVolumes = struct {
             self.boxes.items.len +
             self.lines.items.len +
             self.obbs.items.len;
-    }
-
-    fn parseCsvFloat(fields: *std.mem.SplitIterator(u8, .scalar)) !f32 {
-        const field = fields.next() orelse return error.InvalidCsvRow;
-        const trimmed = std.mem.trim(u8, field, " \t");
-        return std.fmt.parseFloat(f32, trimmed);
     }
 };
