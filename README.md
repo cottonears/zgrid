@@ -128,7 +128,7 @@ E.g., points that are exactly `radius` distance away from a ball's centre are co
 | `Line2f`        | 16 B  |   Average   |
 | `OrientedBox2f` | 24 B  |   Slower    |
 
-A `SquareTree` **stores just one volume type**, chosen at compile time.
+**Trees store just one volume type**, chosen at compile time.
 However, any type of volume can be used for _external_ tree queries.
 For example, a tree containing `Box2f` volumes can only store boxes, but can queried with balls or lines using `findExtOverlaps`.
 
