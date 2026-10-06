@@ -111,8 +111,6 @@ try tree.build(); // indexes the volumes and builds the BVH structure
 ```
 An empty tree can be moved to a new position with `relocate` at very low cost.
 
-There is a companion project that demonstrates how zgrid can be used for a simple particle simulation: see [`zgrid-demo`](https://github.com/cottonears/zgrid-demo).
-
 
 ## Volumes
 
