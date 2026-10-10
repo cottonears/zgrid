@@ -142,6 +142,7 @@ For example, a tree containing `Box2f` volumes can only store boxes, but can que
 ## SquareTree
 
 A `SquareTree` combines a regular grid with a hierarchy of bounding volumes - whose exact structure is determined by the chosen indexer.
+Square trees only index square regions: rectangular regions are padded to their maximum width or height.
 Below is an example of a square tree that uses the `Spring16` curve for indexing and stores ball volumes:
 
 ![SquareTree-Ball](docs/img/square_tree_ball.svg)
@@ -152,7 +153,6 @@ The pictured square tree has two levels:
 
 Note that (in hexadecimal) the first digit of each child cell's index identifies its parent.
 This follows from the use of recursive curves for indexing; see [Indexing](#indexing) for more details.
-Note also that the indexed region is square: rectangular regions will be padded to a symmetrical square shape.
 
 Volumes are staged when `add` is called: their geometric data and client IDs are recorded with no further processing.
 Adding volumes is very cheap, so there is no parallel variant of this method.
