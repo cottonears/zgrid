@@ -147,8 +147,8 @@ Below is an example of a square tree that uses the `Spring16` curve for indexing
 ![SquareTree-Ball](docs/img/square_tree_ball.svg)
 
 The pictured square tree has two levels:
-- Level 0 has a 4 x 4 grid labelled 0 - F (purple)
-- Level 1 has a 16 x 16 grid labelled 00 - FF (blue)
+- Level 0 has a 4 x 4 grid labelled 0 - F (blue)
+- Level 1 has a 16 x 16 grid labelled 00 - FF (green)
 
 Note that (in hexadecimal) the first digit of each child cell's index identifies its parent.
 This follows from the use of recursive curves for indexing; see [Indexing](#indexing) for more details.
