@@ -29,7 +29,7 @@ const usage_msg =
     \\
 ;
 var random_vols: TestVolumes = undefined;
-var num_trials: usize = 60;
+var num_trials: usize = 100;
 var num_vols: usize = 10_000;
 
 pub fn main(init: std.process.Init) !void {

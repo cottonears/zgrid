@@ -345,7 +345,7 @@ pub fn SquareTree(
         }
 
         /// Returns id pairs for stored volumes that overlap with the provided query volumes.
-        /// Requires `build` to have been called  since the last volumes were added.
+        /// Requires `build` to have been called  since the last volume was added.
         /// Single-threaded (no io dependency) but not thread-safe (writes to scratch bufs).
         pub fn findExtOverlaps(
             self: *Self,
@@ -369,7 +369,7 @@ pub fn SquareTree(
         }
 
         /// Returns id pairs for stored volumes that overlap with the provided query volumes.
-        /// Requires `build` to have been called  since the last volumes were added.
+        /// Requires `build` to have been called  since the last volume was added.
         /// Does work in parallel if the io implementation supports it; not thread-safe.
         pub fn findExtOverlapsParallel(
             self: *Self,
@@ -419,7 +419,7 @@ pub fn SquareTree(
         }
 
         /// Returns id pairs for stored volumes that overlap with the provided query volume.
-        /// Requires `build` to have been called since the last `addVolume`.
+        /// Requires `build` to have been called since the last volume was added.
         /// Single-threaded (no io dependency) but not thread-safe (writes to scratch bufs).
         pub fn findExtOverlapsSingle(
             self: *Self,
@@ -452,7 +452,7 @@ pub fn SquareTree(
         }
 
         /// Returns ids for every pair of stored volumes that overlap with each other.
-        /// Requires `build` to have been called since the last volumes were added.
+        /// Requires `build` to have been called since the last volume was added.
         /// Single-threaded (no io dependency) but not thread-safe (writes to scratch bufs).
         pub fn findSelfOverlaps(self: *Self, overlap_buf: [][2]ClientId) Error![][2]ClientId {
             if (!self.bounds_valid) return error.TreeNotBuilt;
@@ -468,7 +468,7 @@ pub fn SquareTree(
         }
 
         /// Returns ids for every pair of stored volumes that overlap with each other.
-        /// Requires `build` to have been called since the last volumes were added.
+        /// Requires `build` to have been called since the last volume was added.
         /// Does work in parallel if the io implementation supports it; not thread-safe.
         pub fn findSelfOverlapsParallel(
             self: *Self,
@@ -591,7 +591,7 @@ pub fn SquareTree(
 
         /// Finds stored volumes nearest to each query point, nearest-first.
         /// Search stops when k volumes are found, or there are no more candidates within `max_dist`.
-        /// Requires `build` to have been called since the last volumes were added.
+        /// Requires `build` to have been called since the last volume was added.
         pub fn findNeighbours(
             self: *const Self,
             bufs: [][]Neighbour,
@@ -610,7 +610,7 @@ pub fn SquareTree(
 
         /// Finds stored volumes nearest to the query point, nearest-first.
         /// Search stops when k volumes are found, or there are no more candidates within `max_dist`.
-        /// Requires `build` to have been called since the last `addVolume`.
+        /// Requires `build` to have been called since the last volume was added.
         /// Does work in parallel if the io implementation supports it; thread-safe.
         pub fn findNeighboursParallel(
             self: *const Self,
@@ -640,7 +640,7 @@ pub fn SquareTree(
 
         /// Finds stored volumes nearest to a single query point, nearest-first.
         /// Search stops when k volumes are found, or there are no more candidates within `max_dist`.
-        /// Requires `build` to have been called since the last volumes were added.
+        /// Requires `build` to have been called since the last volume was added.
         pub fn findNeighboursSingle(
             self: *const Self,
             buf: []Neighbour,

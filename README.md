@@ -11,6 +11,8 @@ Efficient, simple-to-use parallel methods are also provided alongside serial imp
 
 Other spatial data structures are planned once the public API of `SquareTree` has stabilised; see the [Roadmap](#roadmap).
 
+There is a companion project, [zgrid-demo](https://github.com/cottonears/zgrid-demo), that demonstrates how zgrid can be used in a basic interactive particle simulation
+
 
 ## Prerequisites
 Zig 0.17.
@@ -100,7 +102,13 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Neighbour found: id = {d}, dist = {d:.3}.\n", .{ n.id, n.dist });
     }
 }
+
 ```
+
+Note that volumes whose centres lie outside the mapped region (like entity 1337 in the above example) will be assigned to a leaf cell along one of its edges.
+This is done by clamping the volume's centre.
+
+
 A `SquareTree` is designed to be rebuilt frequently rather than maintained incrementally.
 A typical update cycle is:
 ``` zig
@@ -144,6 +152,7 @@ The pictured square tree has two levels:
 
 Note that (in hexadecimal) the first digit of each child cell's index identifies its parent.
 This follows from the use of recursive curves for indexing; see [Indexing](#indexing) for more details.
+Note also that the indexed region is square: rectangular regions will be padded to a symmetrical square shape.
 
 Volumes are staged when `add` is called: their geometric data and client IDs are recorded with no further processing.
 Adding volumes is very cheap, so there is no parallel variant of this method.
@@ -192,7 +201,7 @@ The second parameter controls *compression*: how many levels of the hierarchy ar
 Using a compression of 1 will result in an uncompressed tree, so in the above example level 0 is a 2 x 2 grid.
 If the compression is set to a higher number, the top-level grid becomes finer and only the hierarchy in lower levels is retained.
 If compression is set equal to the tree's effective depth (6 in the above example), then the entire hierarchy will be collapsed into level 0 - the tree becomes a uniform grid.
-Compression is clamped to the range (1, effective_depth) to prevent compile errors.
+Compression is clamped to the range [1, effective_depth] to prevent compile errors.
 
 Aside from the grid-size and tree depth ramifications, the choice of curve makes little practical difference (at present).
 All curves have possess same key recursive property, although there are marginal differences in how well they preserve locality.
@@ -200,12 +209,15 @@ It's conceivable that future algorithms may perform better with some curves than
 Another reason for keeping them around is that they are pretty to look at; see below.
 
 ### Morton (the standard option - a good default choice)
+The base curve is 2x2, so each parent node has 4 children:
 ![Morton16](docs/img/curve_morton_16.svg)
 
 ### Spring (simple - and bouncy)
+Base curve is 4x4, so parent nodes have 16 children:
 ![Spring16](docs/img/curve_spring_16.svg)
 
 ### ZigZag (as popularised py jpeg)
+Base curve is 4x4, so parent nodes have 16 children:
 ![ZigZag16](docs/img/curve_zigzag_16.svg)
 
 
@@ -236,16 +248,37 @@ const pairs = try tree.findExtOverlapsParallel(io, pairs_buf[found..], &query_id
 Note the serial and parallel overlap queries will not return pairs in the same order.
 If pair ordering is important in your application, you will need to sort the results after querying.
 
-Concurrent calls on the same tree from different client threads is strongly discouraged.
+Concurrent calls on the same tree from different threads are strongly discouraged.
 Overlap queries use an internal scratch buffer and are not thread safe.
-This includes the overlap queries, which modify internal scratch buffers while searching the tree.
+The current neighbours search implementation is thread-safe, but it may be changed in future.
+
+
+## Benchmarking and troubleshooting
+
+Zgrid includes a basic benchmarking utility to compare the performance of different tree configurations and library functions.
+Build it and run it as shown below:
+``` bash
+# recommend building with release=safe or release=fast
+zig build bench --release=fast
+# adjust the number of volumes / trials with -v / -t
+./zig-out/bin/zgrid-bench -v 20000 -t 50
+# distribution params aren't exposed in the CLI, edit zgrid_bench.zig to change these
+```
+
+
+For debugging purposes, basic SVG visualisation of trees is available:
+``` zig
+try tree.build(); // tree must be built first
+try zgrid.writeTreeSvg(Tree, &tree, io, allocator, "tree.html", true, true);
+```
+The image in the SquareTree section of this readme was produced with this function.
 
 
 ## Roadmap
 In no particular order:
-- Add support for convex hulls (definitely useful, not as easy).
-- Try out dual-tree traversal (again) for self-overlap queries.
+- Add support for convex hulls.
 - Research BIGMIN/LITMAX as potential performance improvements for neighbours search.
 - Implement optimised Morton indexing with PDEP + PEXT (with fallback to current LUT if not available).
 - Add layered_tree that wraps several trees (e.g., static + dynamic) and allows for easy in-tree and cross-tree queries.
+- Add square_tree variant that uses a slice of slices for backing storage (vs. a single slice). This would remove the sort step from build, but be less efficient/flexible capacity-wise.
 - Experiment with a dynamic-depth 2D linear BVH along the lines of: https://research.nvidia.com/sites/default/files/pubs/2012-06_Maximizing-Parallelism-in/karras2012hpg_paper.pdf
